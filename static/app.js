@@ -13,7 +13,7 @@ function active(){return state.projects.filter(p=>p.stage!=="Complete")}
 function isOverdue(p){return p.next_action_due&&daysUntil(p.next_action_due)<0&&p.stage!=="Complete"}
 function needsAttention(p){return p.stage!=="Complete"&&(p.risk!=="Green"||p.blocked||isOverdue(p))}
 function row(p,compact=false){return '<tr data-id="'+p.id+'"><td><div class="item-title">'+safe(p.customer)+'</div><div class="item-sub">'+safe(p.project_name)+'</div></td>'+(compact?'<td>'+safe(p.project_type)+'</td>':'')+'<td>'+safe(p.engineer||"Unassigned")+'</td><td><span class="badge stage">'+safe(p.stage)+'</span></td><td>'+badge(p.risk)+'</td><td>'+fmtDate(p.target_date)+'</td><td><div>'+safe(p.next_action||"No next action")+'</div><div class="item-sub">'+safe(p.next_action_owner||"Unassigned")+'</div></td></tr>'}
-async function load(){[state.options,state.projects]=await Promise.all([api("/api/options"),api("/api/projects")]);try{state.intake=await api("/api/intake");state.intakeError=null}catch(e){console.error("Project intake:",e);state.intake=[];state.intakeError=e.message}fillOptions();renderAll()}
+async function load(){[state.options,state.projects]=await Promise.all([api("/api/options"),api("/api/projects")]);fillOptions();renderAll()}
 function fillOptions(){
  const maps=[["filter-stage",state.options.stages],["filter-risk",state.options.risks],["filter-type",state.options.project_types]];
  maps.forEach(([id,vals])=>{const el=$("#"+id);vals.forEach(v=>el.insertAdjacentHTML("beforeend",'<option>'+safe(v)+'</option>'))});
@@ -31,7 +31,7 @@ function fillOptions(){
   form.elements[n].innerHTML=(allowBlank?'<option value="">'+blankLabel+'</option>':"")+vals.map(v=>'<option>'+safe(v)+'</option>').join("")
  });
 }
-function renderAll(){renderDashboard();renderProjects();renderIntake();renderTeam();bindRows()}
+function renderAll(){renderDashboard();renderProjects();renderTeam();bindRows()}
 function renderDashboard(){
  const list=active(), reds=list.filter(p=>p.risk==="Red").length, yellows=list.filter(p=>p.risk==="Yellow").length;
  const overdue=list.filter(isOverdue).length;
@@ -74,7 +74,8 @@ function renderTeam(){
  $("#team-grid").innerHTML=Object.entries(groups).sort().map(([name,items])=>'<article class="team-card"><h3>'+safe(name)+'</h3><div class="item-sub">Active project workload</div><div class="team-stats"><div><strong>'+items.length+'</strong><span class="small">Active</span></div><div><strong>'+items.filter(needsAttention).length+'</strong><span class="small">Attention</span></div><div><strong>'+items.filter(isOverdue).length+'</strong><span class="small">Overdue</span></div></div>'+items.slice(0,5).map(p=>'<div class="team-project" data-id="'+p.id+'"><div class="item-title">'+safe(p.customer)+'</div><div class="item-sub">'+safe(p.stage)+' · '+p.risk+'</div></div>').join("")+'</article>').join("")||'<div class="empty">No active assignments.</div>'
 }
 function bindRows(){$$("[data-id]").forEach(el=>el.onclick=()=>openDetail(Number(el.dataset.id)))}
-function setView(name){state.view=name;$(".view").forEach(v=>v.classList.add("hidden"));$("#"+name+"-view").classList.remove("hidden");$(".nav-link").forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",intake:"Project Intake",team:"Team View"}[name]}
+async function loadIntake(){try{state.intake=await api("/api/intake");state.intakeError=null}catch(e){console.error("Project intake:",e);state.intake=[];state.intakeError=e.message}renderIntake()}
+function setView(name){state.view=name;$(".view").forEach(v=>v.classList.add("hidden"));const target=$("#"+name+"-view");if(!target){toast("This view is not available. Please refresh the page.");return}target.classList.remove("hidden");$(".nav-link").forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",intake:"Project Intake",team:"Team View"}[name];if(name==="intake")loadIntake()}
 function openForm(project=null,intakeId=null){
  const f=$("#project-form");f.reset();$("#project-id").value=project?.id||"";$("#intake-id").value=intakeId||"";$("#form-title").textContent=intakeId?"Review Project Intake":project?"Edit Project":"New Project";
  f.elements.technical_manager.value=project?.technical_manager||"Chad";
@@ -121,4 +122,4 @@ $$(".nav-link").forEach(n=>n.onclick=()=>setView(n.dataset.view));$$("[data-go]"
 ["search","filter-stage","filter-risk","filter-type"].forEach(id=>$("#"+id).addEventListener(id==="search"?"input":"change",()=>{renderProjects();bindRows()}));
 $$(".modal").forEach(m=>m.addEventListener("click",e=>{if(e.target===m)close(m.id)}));
 $("#today").textContent=new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"});
-load().catch(e=>{console.error(e);toast("Unable to load the application")});
+load().catch(e=>{console.error(e);toast("Unable to load: "+e.message)});
