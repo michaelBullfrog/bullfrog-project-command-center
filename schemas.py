@@ -118,3 +118,22 @@ class ProjectOut(ProjectBase):
     contacts: list[ContactOut] = []
     activities: list[ActivityOut] = []
     model_config = ConfigDict(from_attributes=True)
+
+
+class IntakeEmailCreate(BaseModel):
+    message_id: str = Field(min_length=1, max_length=500)
+    subject: str = Field(min_length=1, max_length=500)
+    sender_name: str | None = Field(default=None, max_length=200)
+    sender_email: str | None = Field(default=None, max_length=320)
+    body: str | None = None
+    received_at: datetime | None = None
+
+class IntakeEmailOut(IntakeEmailCreate):
+    id: int
+    status: str
+    project_id: int | None = None
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class IntakeConvert(BaseModel):
+    project: ProjectCreate
