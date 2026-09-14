@@ -8,12 +8,13 @@ A lightweight internal project-management application for Bullfrog technical ope
 - Needs Attention and Upcoming Go-Lives queues
 - Searchable/filterable project list
 - New and edit project forms
-- Project detail view with scope, blockers, next action, milestones, and notes
+- Project detail view with scope, blockers, next action, milestones, notes, and persistent attachments
 - Engineer workload view
 - Automatic milestone templates for Webex Calling, Webex Contact Center, Meraki, Network, and Other
 - FastAPI REST API
 - PostgreSQL production support and SQLite local fallback
 - Sample data on a new empty database
+- Shared-login protection for the dashboard, APIs, and attachments
 - Single-service Render Blueprint configuration
 
 ## Run locally
@@ -51,6 +52,17 @@ This V1 Blueprint uses SQLite so it creates only one Render resource. It is suit
 
 Connect a durable PostgreSQL database by setting the web service's `DATABASE_URL` environment variable. The database can be an existing Render Postgres database or an external PostgreSQL provider. Do not enter real customer project information until durable storage and authentication are configured.
 
+## Required security configuration
+
+Before opening the deployed application, add these environment variables to the Render web service:
+
+- `APP_USERNAME`: shared Bullfrog login name
+- `APP_PASSWORD`: a strong shared password
+
+Keep these values only in Render. The public health-check endpoint remains available at `/api/health`.
+
+Note attachments support PNG, JPG, PDF, Word, Excel, and TXT files. Each file is limited to 10 MB, with up to five files per note. Attachments are stored in PostgreSQL and require the shared application login.
+
 ## API
 
 Interactive API documentation is available at `/docs`. Health check: `/api/health`.
@@ -66,4 +78,4 @@ Primary endpoints:
 
 ## V1 security note
 
-Authentication is intentionally not included in this starter build. Keep the Render service private during testing and do not enter sensitive customer information until authentication is added.
+The shared login protects V1. Individual accountability and access revocation require Microsoft Entra SSO, which is recommended before wider production use.
