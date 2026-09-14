@@ -12,6 +12,7 @@ jobs:
       WEBEX_REDIRECT_URI: https://example.com/auth/callback
       WEBEX_ALLOWED_DOMAIN: bullfrog.net
       SESSION_SECRET: test-session-secret-for-ci-only
+      INTAKE_WEBHOOK_SECRET: test-intake-secret-for-ci-only
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,4 +34,25 @@ jobs:
               assert root.headers["location"] == "/login"
               login = client.get("/login")
               assert login.status_code == 200
+
+              unauthorized = client.post("/api/intake/email", json={
+                  "message_id": "ci-message-1", "subject": "CI project request"
+              })
+              assert unauthorized.status_code == 401
+
+              received = client.post("/api/intake/email", headers={
+                  "X-Intake-Secret": "test-intake-secret-for-ci-only"
+              }, json={
+                  "message_id": "ci-message-1", "subject": "CI project request",
+                  "sender_email": "sales@example.com", "body": "Test request"
+              })
+              assert received.status_code == 201
+              assert received.json()["status"] == "Pending"
+
+              duplicate = client.post("/api/intake/email", headers={
+                  "X-Intake-Secret": "test-intake-secret-for-ci-only"
+              }, json={
+                  "message_id": "ci-message-1", "subject": "CI project request"
+              })
+              assert duplicate.status_code == 200
           PY
