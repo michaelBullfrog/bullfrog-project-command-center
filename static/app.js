@@ -60,8 +60,8 @@ function renderIntake(){
   const preview=plainEmailBody(item.body).slice(0,320);
   return '<article class="intake-card"><div class="intake-main"><div class="intake-meta"><span class="badge stage">Pending Review</span><span>'+new Date(received).toLocaleString()+'</span></div><h3>'+safe(item.subject)+'</h3><div class="item-sub">From: '+safe(item.sender_name||"Unknown sender")+(item.sender_email?' &lt;'+safe(item.sender_email)+'&gt;':'')+'</div><p>'+safe(preview||"No email body was provided.")+(preview.length>=320?"…":"")+'</p></div><div class="intake-actions"><button class="primary" data-review-intake="'+item.id+'">Review & Create</button><button class="secondary danger" data-dismiss-intake="'+item.id+'">Dismiss</button></div></article>'
  }).join(""):'<div class="empty intake-empty"><strong>Inbox is clear.</strong><span>New messages sent through services@ will appear here for review.</span></div>';
- $("[data-review-intake]").forEach(x=>x.onclick=()=>openIntake(Number(x.dataset.reviewIntake)));
- $("[data-dismiss-intake]").forEach(x=>x.onclick=async()=>{if(confirm("Dismiss this intake request?")){await api("/api/intake/"+x.dataset.dismissIntake+"/dismiss",{method:"PATCH"});await refresh();toast("Intake dismissed")}});
+ $$("[data-review-intake]").forEach(x=>x.onclick=()=>openIntake(Number(x.dataset.reviewIntake)));
+ $$("[data-dismiss-intake]").forEach(x=>x.onclick=async()=>{if(confirm("Dismiss this intake request?")){await api("/api/intake/"+x.dataset.dismissIntake+"/dismiss",{method:"PATCH"});await refresh();toast("Intake dismissed")}});
 }
 function openIntake(id){
  const item=state.intake.find(x=>x.id===id);if(!item)return;
@@ -75,7 +75,7 @@ function renderTeam(){
 }
 function bindRows(){$$("[data-id]").forEach(el=>el.onclick=()=>openDetail(Number(el.dataset.id)))}
 async function loadIntake(){try{state.intake=await api("/api/intake");state.intakeError=null}catch(e){console.error("Project intake:",e);state.intake=[];state.intakeError=e.message}renderIntake()}
-function setView(name){state.view=name;$(".view").forEach(v=>v.classList.add("hidden"));const target=$("#"+name+"-view");if(!target){toast("This view is not available. Please refresh the page.");return}target.classList.remove("hidden");$(".nav-link").forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",intake:"Project Intake",team:"Team View"}[name];if(name==="intake")loadIntake()}
+function setView(name){state.view=name;$$(".view").forEach(v=>v.classList.add("hidden"));const target=$("#"+name+"-view");if(!target){toast("This view is not available. Please refresh the page.");return}target.classList.remove("hidden");$$(".nav-link").forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",intake:"Project Intake",team:"Team View"}[name];if(name==="intake")loadIntake()}
 function openForm(project=null,intakeId=null){
  const f=$("#project-form");f.reset();$("#project-id").value=project?.id||"";$("#intake-id").value=intakeId||"";$("#form-title").textContent=intakeId?"Review Project Intake":project?"Edit Project":"New Project";
  f.elements.technical_manager.value=project?.technical_manager||"Chad";
