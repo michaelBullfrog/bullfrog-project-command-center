@@ -17,6 +17,13 @@ class MilestoneOut(MilestoneCreate):
     completed_date: date | None = None
     model_config = ConfigDict(from_attributes=True)
 
+class AttachmentOut(BaseModel):
+    id: int
+    filename: str
+    content_type: str
+    size_bytes: int
+    model_config = ConfigDict(from_attributes=True)
+
 class NoteCreate(BaseModel):
     author: str = Field(min_length=1, max_length=100)
     note: str = Field(min_length=1)
@@ -25,6 +32,7 @@ class NoteOut(NoteCreate):
     id: int
     project_id: int
     created_at: datetime
+    attachments: list[AttachmentOut] = []
     model_config = ConfigDict(from_attributes=True)
 
 class ProjectBase(BaseModel):
