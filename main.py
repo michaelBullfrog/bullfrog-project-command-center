@@ -315,7 +315,7 @@ async def revio_lookup_customer(customer_id: str) -> dict | None:
     base_url = os.getenv("REVIO_BASE_URL", "https://api.psarev.io").rstrip("/")
     host = os.getenv("REVIO_HOST", "bullfrog.psarev.io").strip()
     exchange_path = os.getenv("REVIO_TOKEN_EXCHANGE_PATH", "/api/v1/auth/api-key/exchange")
-    customers_path = os.getenv("REVIO_CUSTOMER_LIST_PATH", "/psac/api/v1/customer-list")
+    customer_path = os.getenv("REVIO_CUSTOMER_PATH", "/billing/api/v1/customers/{customer_id}")
     api_key = os.getenv("REVIO_API_KEY", "").strip()
     async with httpx.AsyncClient(timeout=30.0) as client:
         exchange = await client.post(
@@ -327,26 +327,20 @@ async def revio_lookup_customer(customer_id: str) -> dict | None:
         if not token:
             raise RuntimeError("Rev PSA did not return an access token")
         headers = {"Authorization": f"Bearer {token}", "X-Revio-Host": host, "Accept": "application/json"}
-        page_size = 100
-        for page in range(1, 51):
-            response = await client.get(
-                f"{base_url}/{customers_path.lstrip('/')}", headers=headers,
-                params={"page": page, "pageSize": page_size},
-            )
-            response.raise_for_status()
-            payload = response.json()
-            records = revio_records(payload)
-            for item in records:
-                item_id = revio_value(item, "customerId", "customer_id", "id")
-                if str(item_id or "").strip() == customer_id:
-                    name = revio_value(item, "customerName", "companyName", "businessName", "displayName", "name")
-                    if not name:
-                        raise RuntimeError("Rev PSA returned the customer without a name")
-                    return {"customer_id": customer_id, "customer_name": str(name), "revio_record": item}
-            last_page = revio_value(payload, "lastPage", "last_page", "totalPages", "total_pages") if isinstance(payload, dict) else None
-            if not records or len(records) < page_size or (last_page and page >= int(last_page)):
-                break
-    return None
+        path = customer_path.format(customer_id=quote(customer_id, safe=""))
+        response = await client.get(f"{base_url}/{path.lstrip('/')}", headers=headers)
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        payload = response.json()
+        customer = payload.get("data", payload) if isinstance(payload, dict) else payload
+        if not isinstance(customer, dict):
+            raise RuntimeError("Rev PSA returned an unexpected customer response")
+        name = revio_value(customer, "name", "customerName", "companyName", "businessName", "displayName")
+        if not name:
+            raise RuntimeError("Rev PSA returned the customer without a name")
+        resolved_id = revio_value(customer, "customerId", "customer_id", "id") or customer_id
+        return {"customer_id": str(resolved_id), "customer_name": str(name), "revio_record": customer}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
