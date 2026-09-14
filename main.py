@@ -99,14 +99,6 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="Bullfrog Project Command Center", version="1.2.0", lifespan=lifespan)
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=os.getenv("SESSION_SECRET") or secrets.token_urlsafe(48),
-    same_site="lax",
-    https_only=True,
-    max_age=8 * 60 * 60,
-)
-
 def webex_oauth_configured() -> bool:
     return all(os.getenv(key) for key in (
         "WEBEX_CLIENT_ID", "WEBEX_CLIENT_SECRET", "WEBEX_REDIRECT_URI",
@@ -135,6 +127,16 @@ async def require_webex_login(request: Request, call_next):
             return JSONResponse({"detail": "Authentication required"}, status_code=401)
         return RedirectResponse("/login", status_code=303)
     return await call_next(request)
+
+# Add SessionMiddleware after the auth middleware so it wraps authentication
+# and makes request.session available before the access check runs.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSION_SECRET") or secrets.token_urlsafe(48),
+    same_site="lax",
+    https_only=True,
+    max_age=8 * 60 * 60,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
