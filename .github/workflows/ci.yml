@@ -20,6 +20,8 @@ jobs:
           python-version: "3.13"
       - run: pip install -r requirements.txt
       - run: python -m compileall -q .
+      - name: Validate browser JavaScript
+        run: node --check static/app.js
       - name: Test application startup and authentication routing
         run: |
           python - <<'PY'
