@@ -15,7 +15,18 @@ function fillOptions(){
  const maps=[["filter-stage",state.options.stages],["filter-risk",state.options.risks],["filter-type",state.options.project_types]];
  maps.forEach(([id,vals])=>{const el=$("#"+id);vals.forEach(v=>el.insertAdjacentHTML("beforeend",'<option>'+safe(v)+'</option>'))});
  const form=$("#project-form");
- [["project_type",state.options.project_types],["priority",state.options.priorities],["stage",state.options.stages],["risk",state.options.risks]].forEach(([n,vals])=>{form.elements[n].innerHTML=vals.map(v=>'<option>'+safe(v)+'</option>').join("")});
+ [
+  ["project_type",state.options.project_types,false,""],
+  ["priority",state.options.priorities,false,""],
+  ["stage",state.options.stages,false,""],
+  ["risk",state.options.risks,false,""],
+  ["technical_manager",state.options.customer_success_managers,false,""],
+  ["engineer",state.options.engineers,true,"Unassigned"],
+  ["sales_owner",state.options.sales_owners,true,"Unassigned"],
+  ["next_action_owner",state.options.next_action_owners,true,"Unassigned"]
+ ].forEach(([n,vals,allowBlank,blankLabel])=>{
+  form.elements[n].innerHTML=(allowBlank?'<option value="">'+blankLabel+'</option>':"")+vals.map(v=>'<option>'+safe(v)+'</option>').join("")
+ });
 }
 function renderAll(){renderDashboard();renderProjects();renderTeam();bindRows()}
 function renderDashboard(){
@@ -44,7 +55,7 @@ function bindRows(){$$("[data-id]").forEach(el=>el.onclick=()=>openDetail(Number
 function setView(name){state.view=name;$$(".view").forEach(v=>v.classList.add("hidden"));$("#"+name+"-view").classList.remove("hidden");$$(".nav-link").forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",team:"Team View"}[name]}
 function openForm(project=null){
  const f=$("#project-form");f.reset();$("#project-id").value=project?.id||"";$("#form-title").textContent=project?"Edit Project":"New Project";
- f.elements.technical_manager.value=project?.technical_manager||"Mike";
+ f.elements.technical_manager.value=project?.technical_manager||"Chad";
  if(project)Object.entries(project).forEach(([k,v])=>{if(f.elements[k]){if(f.elements[k].type==="checkbox")f.elements[k].checked=!!v;else f.elements[k].value=v??""}});
  $("#project-modal").classList.remove("hidden")
 }
