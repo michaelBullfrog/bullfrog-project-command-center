@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Bullfrog Project Command Center</title>
-  <link rel="stylesheet" href="/static/styles.css?v=1.4.0">
+  <link rel="stylesheet" href="/static/styles.css?v=1.5.0">
 </head>
 <body>
   <aside class="sidebar">
@@ -69,6 +69,10 @@
         <input type="hidden" id="project-id">
         <input type="hidden" id="intake-id">
         <div class="form-grid">
+          <label>Rev PSA Customer ID
+            <div class="customer-lookup-row"><input name="customer_id" inputmode="numeric" pattern="[0-9]*" placeholder="Enter customer number"><button type="button" class="secondary" id="lookup-customer">Search Rev PSA</button></div>
+            <span class="lookup-status" id="customer-lookup-status"></span>
+          </label>
           <label>Customer*<input name="customer" required></label>
           <label>Project name*<input name="project_name" required></label>
           <label>Project type<select name="project_type"></select></label>
@@ -95,6 +99,6 @@
     <div class="modal-card detail-card"><button class="modal-close" data-close="detail-modal">×</button><div id="project-detail"></div></div>
   </div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=1.4.0"></script>
+  <script src="/static/app.js?v=1.5.0"></script>
 </body>
 </html>
