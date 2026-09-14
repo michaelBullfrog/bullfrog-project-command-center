@@ -57,4 +57,8 @@ jobs:
                   "message_id": "ci-message-1", "subject": "CI project request"
               })
               assert duplicate.status_code == 200
+
+              validation = client.post("/api/graph/notifications?validationToken=graph-check")
+              assert validation.status_code == 200
+              assert validation.text == "graph-check"
           PY
