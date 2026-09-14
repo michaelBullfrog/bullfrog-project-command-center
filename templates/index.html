@@ -12,6 +12,7 @@
     <nav>
       <button class="nav-link active" data-view="dashboard">▦ <span>Dashboard</span></button>
       <button class="nav-link" data-view="projects">☷ <span>Projects</span></button>
+      <button class="nav-link" data-view="intake">✉ <span>Project Intake</span><span class="nav-count hidden" id="intake-nav-count"></span></button>
       <button class="nav-link" data-view="team">♙ <span>Team View</span></button>
     </nav>
     <button class="primary wide" id="sidebar-new">＋ New Project</button>
@@ -46,6 +47,14 @@
       </article>
     </section>
 
+    <section id="intake-view" class="view hidden">
+      <article class="panel">
+        <div class="panel-head"><div><p class="eyebrow">SERVICES@ INBOX</p><h2>Pending Project Intake</h2></div><span id="intake-count" class="count-pill"></span></div>
+        <p class="section-intro">Review incoming requests before turning them into active projects.</p>
+        <div id="intake-list" class="intake-list"></div>
+      </article>
+    </section>
+
     <section id="team-view" class="view hidden">
       <div class="panel-head standalone"><div><p class="eyebrow">CAPACITY</p><h2>Engineer Workload</h2></div></div>
       <div class="team-grid" id="team-grid"></div>
@@ -58,6 +67,7 @@
       <p class="eyebrow">PROJECT INTAKE</p><h2 id="form-title">New Project</h2>
       <form id="project-form">
         <input type="hidden" id="project-id">
+        <input type="hidden" id="intake-id">
         <div class="form-grid">
           <label>Customer*<input name="customer" required></label>
           <label>Project name*<input name="project_name" required></label>
