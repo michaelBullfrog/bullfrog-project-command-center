@@ -35,6 +35,12 @@ class Project(Base):
     notes: Mapped[list["ProjectNote"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="ProjectNote.created_at.desc()"
     )
+    contacts: Mapped[list["CustomerContact"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", order_by="CustomerContact.is_primary.desc(), CustomerContact.name"
+    )
+    activities: Mapped[list["ProjectActivity"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", order_by="ProjectActivity.created_at.desc()"
+    )
 
 class Milestone(Base):
     __tablename__ = "milestones"
@@ -71,3 +77,32 @@ class NoteAttachment(Base):
     data: Mapped[bytes] = mapped_column(LargeBinary)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     note: Mapped[ProjectNote] = relationship(back_populates="attachments")
+
+class CustomerContact(Base):
+    __tablename__ = "customer_contacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    role: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    contact_type: Mapped[str] = mapped_column(String(40), default="Technical")
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    project: Mapped[Project] = relationship(back_populates="contacts")
+
+class ProjectActivity(Base):
+    __tablename__ = "project_activities"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    actor_name: Mapped[str] = mapped_column(String(160))
+    actor_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    action: Mapped[str] = mapped_column(String(60))
+    field_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    old_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    new_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    project: Mapped[Project] = relationship(back_populates="activities")
