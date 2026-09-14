@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Bullfrog Project Command Center</title>
-  <link rel="stylesheet" href="/static/styles.css?v=1.3.3">
+  <link rel="stylesheet" href="/static/styles.css?v=1.4.0">
 </head>
 <body>
   <aside class="sidebar">
@@ -49,7 +49,7 @@
 
     <section id="intake-view" class="view hidden">
       <article class="panel">
-        <div class="panel-head"><div><p class="eyebrow">SERVICES@ INBOX</p><h2>Pending Project Intake</h2></div><span id="intake-count" class="count-pill"></span></div>
+        <div class="panel-head"><div><p class="eyebrow">SERVICES@ INBOX</p><h2>Pending Project Intake</h2></div><div class="intake-head-actions"><span id="intake-count" class="count-pill"></span><button class="secondary" id="sync-intake">↻ Sync Inbox</button></div></div>
         <p class="section-intro">Review incoming requests before turning them into active projects.</p>
         <div id="intake-list" class="intake-list"></div>
       </article>
@@ -95,6 +95,6 @@
     <div class="modal-card detail-card"><button class="modal-close" data-close="detail-modal">×</button><div id="project-detail"></div></div>
   </div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=1.3.3"></script>
+  <script src="/static/app.js?v=1.4.0"></script>
 </body>
 </html>
