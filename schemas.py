@@ -35,6 +35,41 @@ class NoteOut(NoteCreate):
     attachments: list[AttachmentOut] = []
     model_config = ConfigDict(from_attributes=True)
 
+class ContactCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    role: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    contact_type: str = "Technical"
+    is_primary: bool = False
+
+class ContactUpdate(BaseModel):
+    name: str | None = None
+    role: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    contact_type: str | None = None
+    is_primary: bool | None = None
+
+class ContactOut(ContactCreate):
+    id: int
+    project_id: int
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class ActivityOut(BaseModel):
+    id: int
+    project_id: int
+    actor_name: str
+    actor_email: str | None = None
+    action: str
+    field_name: str | None = None
+    old_value: str | None = None
+    new_value: str | None = None
+    description: str
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
 class ProjectBase(BaseModel):
     customer: str = Field(min_length=1, max_length=160)
     project_name: str = Field(min_length=1, max_length=200)
@@ -80,4 +115,6 @@ class ProjectOut(ProjectBase):
     updated_at: datetime
     milestones: list[MilestoneOut] = []
     notes: list[NoteOut] = []
+    contacts: list[ContactOut] = []
+    activities: list[ActivityOut] = []
     model_config = ConfigDict(from_attributes=True)
