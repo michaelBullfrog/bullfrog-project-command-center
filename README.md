@@ -52,16 +52,24 @@ This V1 Blueprint uses SQLite so it creates only one Render resource. It is suit
 
 Connect a durable PostgreSQL database by setting the web service's `DATABASE_URL` environment variable. The database can be an existing Render Postgres database or an external PostgreSQL provider. Do not enter real customer project information until durable storage and authentication are configured.
 
-## Required security configuration
+## Required Webex SSO configuration
 
-Before opening the deployed application, add these environment variables to the Render web service:
+Create a Webex OAuth integration with this callback:
 
-- `APP_USERNAME`: shared Bullfrog login name
-- `APP_PASSWORD`: a strong shared password
+`https://bullfrog-project-command-center.onrender.com/auth/callback`
 
-Keep these values only in Render. The public health-check endpoint remains available at `/api/health`.
+Select only the `spark:people_read` scope. Add these environment variables to the Render web service:
 
-Note attachments support PNG, JPG, PDF, Word, Excel, and TXT files. Each file is limited to 10 MB, with up to five files per note. Attachments are stored in PostgreSQL and require the shared application login.
+- `WEBEX_CLIENT_ID`
+- `WEBEX_CLIENT_SECRET`
+- `WEBEX_REDIRECT_URI`
+- `WEBEX_ALLOWED_DOMAIN=bullfrog.net`
+- `SESSION_SECRET`: a long random value
+- Optional `WEBEX_ALLOWED_ORG_ID`: further restrict access to one Webex organization
+
+The integration verifies the user through `/v1/people/me` and then discards the Webex access and refresh tokens. The signed application session contains only the user's name, email, and organization ID. The public health-check endpoint remains available at `/api/health`.
+
+Note attachments support PNG, JPG, PDF, Word, Excel, and TXT files. Each file is limited to 10 MB, with up to five files per note. Attachments are stored in PostgreSQL and require Webex SSO.
 
 ## API
 
@@ -78,4 +86,4 @@ Primary endpoints:
 
 ## V1 security note
 
-The shared login protects V1. Individual accountability and access revocation require Microsoft Entra SSO, which is recommended before wider production use.
+Webex OAuth protects the application and limits access to the configured Bullfrog email domain. For stronger enforcement, configure WEBEX_ALLOWED_ORG_ID in addition to the domain restriction.
