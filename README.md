@@ -14,7 +14,7 @@ A lightweight internal project-management application for Bullfrog technical ope
 - FastAPI REST API
 - PostgreSQL production support and SQLite local fallback
 - Sample data on a new empty database
-- Render Blueprint configuration
+- Single-service Render Blueprint configuration
 
 ## Run locally
 
@@ -38,16 +38,18 @@ A lightweight internal project-management application for Bullfrog technical ope
 
 No environment variable is required locally; the app creates `bullfrog_projects.db`.
 
-## Deploy to Render
+## Deploy a test version to Render
 
 1. In Render, select **New + → Blueprint**.
 2. Connect this GitHub repository.
-3. Approve the resources from `render.yaml`.
+3. Approve the single web service from `render.yaml`.
 4. Select **Apply**.
 
-Render creates the web service and PostgreSQL database, connects `DATABASE_URL`, and deploys the app. Open the generated service URL when deployment is complete.
+This V1 Blueprint uses SQLite so it creates only one Render resource. It is suitable for interface and workflow testing, but a free Render web service has an ephemeral filesystem. Data can be lost during a restart or redeployment.
 
-> The Render free PostgreSQL plan may expire or change based on Render's current offerings. Choose a paid database before putting production project data into the application.
+## Before production use
+
+Connect a durable PostgreSQL database by setting the web service's `DATABASE_URL` environment variable. The database can be an existing Render Postgres database or an external PostgreSQL provider. Do not enter real customer project information until durable storage and authentication are configured.
 
 ## API
 
