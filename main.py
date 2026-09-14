@@ -1,12 +1,14 @@
+import asyncio
 import httpx
+import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote, urlencode
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from urllib.parse import quote, unquote, urlencode
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -33,6 +35,9 @@ MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_ATTACHMENTS_PER_NOTE = 5
 ALLOWED_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt"}
 INLINE_ATTACHMENT_TYPES = {"image/png", "image/jpeg", "application/pdf"}
+GRAPH_SCOPE = "https://graph.microsoft.com/.default"
+GRAPH_API = "https://graph.microsoft.com/v1.0"
+logger = logging.getLogger("bullfrog.graph")
 
 TEMPLATES = {
     "Webex Calling": ["Discovery Complete", "Network Review Complete", "Control Hub Provisioned",
@@ -129,13 +134,161 @@ def seed_database():
     finally:
         db.close()
 
+def graph_configured() -> bool:
+    return all(os.getenv(key) for key in ("MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_INTAKE_MAILBOX"))
+
+def graph_notification_url() -> str | None:
+    base_url = (os.getenv("APP_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
+    return f"{base_url}/api/graph/notifications" if base_url else None
+
+async def graph_access_token(client: httpx.AsyncClient) -> str:
+    tenant = quote(os.environ["MS_TENANT_ID"], safe="")
+    response = await client.post(
+        f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+        data={
+            "client_id": os.environ["MS_CLIENT_ID"],
+            "client_secret": os.environ["MS_CLIENT_SECRET"],
+            "scope": GRAPH_SCOPE,
+            "grant_type": "client_credentials",
+        },
+    )
+    response.raise_for_status()
+    return response.json()["access_token"]
+
+def graph_received_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except ValueError:
+        return None
+
+def store_graph_message(db: Session, message: dict) -> bool:
+    graph_id = str(message.get("id") or "").strip()
+    internet_id = str(message.get("internetMessageId") or "").strip()
+    unique_id = internet_id or graph_id
+    if not unique_id or db.scalar(select(IntakeEmail.id).where(IntakeEmail.message_id == unique_id)):
+        return False
+    sender = ((message.get("from") or {}).get("emailAddress") or {})
+    body = message.get("body") or {}
+    db.add(IntakeEmail(
+        message_id=unique_id,
+        sender_name=sender.get("name"),
+        sender_email=sender.get("address"),
+        subject=str(message.get("subject") or "(No subject)")[:500],
+        body=body.get("content") or message.get("bodyPreview"),
+        received_at=graph_received_datetime(message.get("receivedDateTime")),
+    ))
+    return True
+
+async def graph_sync_recent_messages(limit: int = 50) -> int:
+    if not graph_configured():
+        raise RuntimeError("Microsoft Graph is not configured")
+    mailbox = quote(os.environ["MS_INTAKE_MAILBOX"], safe="")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        token = await graph_access_token(client)
+        response = await client.get(
+            f"{GRAPH_API}/users/{mailbox}/mailFolders/inbox/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            params={
+                "$select": "id,internetMessageId,subject,from,body,bodyPreview,receivedDateTime",
+                "$orderby": "receivedDateTime desc",
+                "$top": str(max(1, min(limit, 100))),
+            },
+        )
+        response.raise_for_status()
+        messages = response.json().get("value", [])
+    db = SessionLocal()
+    try:
+        added = sum(1 for message in messages if store_graph_message(db, message))
+        db.commit()
+        return added
+    finally:
+        db.close()
+
+async def graph_fetch_messages(message_ids: list[str]):
+    if not graph_configured() or not message_ids:
+        return
+    mailbox = quote(os.environ["MS_INTAKE_MAILBOX"], safe="")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        token = await graph_access_token(client)
+        messages = []
+        for message_id in dict.fromkeys(message_ids):
+            response = await client.get(
+                f"{GRAPH_API}/users/{mailbox}/messages/{quote(message_id, safe='')}",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"$select": "id,internetMessageId,subject,from,body,bodyPreview,receivedDateTime"},
+            )
+            if response.status_code == 404:
+                continue
+            response.raise_for_status()
+            messages.append(response.json())
+    db = SessionLocal()
+    try:
+        for message in messages:
+            store_graph_message(db, message)
+        db.commit()
+    finally:
+        db.close()
+
+async def ensure_graph_subscription():
+    notification_url = graph_notification_url()
+    if not graph_configured() or not notification_url or not os.getenv("INTAKE_WEBHOOK_SECRET"):
+        return
+    mailbox = quote(os.environ["MS_INTAKE_MAILBOX"], safe="")
+    resource = f"/users/{mailbox}/mailFolders('Inbox')/messages"
+    now = datetime.now(timezone.utc)
+    expiration = now + timedelta(days=3)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        token = await graph_access_token(client)
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        current = await client.get(f"{GRAPH_API}/subscriptions", headers=headers)
+        current.raise_for_status()
+        matches = [item for item in current.json().get("value", [])
+                   if item.get("notificationUrl") == notification_url and item.get("resource", "").lower() == resource.lower()]
+        if matches:
+            item = matches[0]
+            expires = datetime.fromisoformat(item["expirationDateTime"].replace("Z", "+00:00"))
+            if expires > now + timedelta(hours=36):
+                return
+            response = await client.patch(
+                f"{GRAPH_API}/subscriptions/{quote(item['id'], safe='')}",
+                headers=headers, json={"expirationDateTime": expiration.isoformat().replace("+00:00", "Z")},
+            )
+        else:
+            response = await client.post(
+                f"{GRAPH_API}/subscriptions", headers=headers,
+                json={
+                    "changeType": "created", "notificationUrl": notification_url,
+                    "resource": resource,
+                    "expirationDateTime": expiration.isoformat().replace("+00:00", "Z"),
+                    "clientState": os.environ["INTAKE_WEBHOOK_SECRET"],
+                },
+            )
+        response.raise_for_status()
+
+async def graph_subscription_maintenance():
+    while True:
+        try:
+            await ensure_graph_subscription()
+        except Exception:
+            logger.exception("Unable to create or renew Microsoft Graph subscription")
+        await asyncio.sleep(12 * 60 * 60)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     seed_database()
-    yield
+    graph_task = asyncio.create_task(graph_subscription_maintenance())
+    try:
+        yield
+    finally:
+        graph_task.cancel()
 
-app = FastAPI(title="Bullfrog Project Command Center", version="1.2.0", lifespan=lifespan)
+app = FastAPI(title="Bullfrog Project Command Center", version="1.4.0", lifespan=lifespan)
 def webex_oauth_configured() -> bool:
     return all(os.getenv(key) for key in (
         "WEBEX_CLIENT_ID", "WEBEX_CLIENT_SECRET", "WEBEX_REDIRECT_URI",
@@ -151,6 +304,7 @@ async def require_webex_login(request: Request, call_next):
         or path == "/auth/webex"
         or path == "/auth/callback"
         or path == "/api/intake/email"
+        or path == "/api/graph/notifications"
         or path.startswith("/static/")
     )
     if public_path:
@@ -290,6 +444,53 @@ def health():
 @app.get("/api/me")
 def get_current_user(request: Request):
     return request.session["user"]
+
+@app.post("/api/graph/notifications")
+async def graph_notifications(
+    request: Request, background_tasks: BackgroundTasks,
+    validation_token: str | None = Query(None, alias="validationToken"),
+):
+    if validation_token is not None:
+        return PlainTextResponse(validation_token)
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(400, "Invalid Microsoft Graph notification")
+    expected_state = os.getenv("INTAKE_WEBHOOK_SECRET", "")
+    message_ids = []
+    for notification in payload.get("value", []):
+        supplied_state = str(notification.get("clientState") or "")
+        if not expected_state or not secrets.compare_digest(supplied_state, expected_state):
+            continue
+        resource_data = notification.get("resourceData") or {}
+        message_id = resource_data.get("id")
+        if not message_id:
+            resource = unquote(str(notification.get("resource") or ""))
+            marker = "/messages/"
+            if marker in resource:
+                message_id = resource.split(marker, 1)[1]
+        if message_id:
+            message_ids.append(str(message_id))
+    if message_ids:
+        background_tasks.add_task(graph_fetch_messages, message_ids)
+    return Response(status_code=status.HTTP_202_ACCEPTED)
+
+@app.post("/api/graph/sync")
+async def sync_graph_mailbox():
+    try:
+        added = await graph_sync_recent_messages()
+        await ensure_graph_subscription()
+        return {"status": "ok", "imported": added}
+    except httpx.HTTPStatusError as exc:
+        detail = "Microsoft Graph rejected the mailbox request"
+        try:
+            graph_error = exc.response.json().get("error", {})
+            detail = graph_error.get("message") or detail
+        except ValueError:
+            pass
+        raise HTTPException(502, detail)
+    except (httpx.HTTPError, KeyError, RuntimeError) as exc:
+        raise HTTPException(502, str(exc))
 
 @app.post("/api/intake/email", response_model=IntakeEmailOut, status_code=status.HTTP_201_CREATED)
 def receive_intake_email(
