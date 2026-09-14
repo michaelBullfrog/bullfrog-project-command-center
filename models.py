@@ -11,6 +11,7 @@ class Project(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     customer: Mapped[str] = mapped_column(String(160), index=True)
+    customer_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     project_name: Mapped[str] = mapped_column(String(200))
     project_type: Mapped[str] = mapped_column(String(60), index=True)
     technical_manager: Mapped[str] = mapped_column(String(100), default="Chad")
