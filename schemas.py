@@ -31,7 +31,7 @@ class ProjectBase(BaseModel):
     customer: str = Field(min_length=1, max_length=160)
     project_name: str = Field(min_length=1, max_length=200)
     project_type: str = "Other"
-    technical_manager: str = "Mike"
+    technical_manager: str = "Chad"
     engineer: str | None = None
     sales_owner: str | None = None
     stage: str = "Intake"
