@@ -6,21 +6,73 @@
   <title>Sign In · Bullfrog Projects</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body class="login-page">
-  <main class="login-shell">
-    <section class="login-card">
-      <div class="login-brand"><span class="brand-mark">B</span><div><strong>BULLFROG</strong><small>PROJECT COMMAND CENTER</small></div></div>
-      <p class="eyebrow">TECHNICAL OPERATIONS</p>
-      <h1>Manage every project<br>from one place.</h1>
-      <p class="login-copy">Sign in with your Bullfrog Webex account to securely access projects, notes, milestones, and attachments.</p>
-      {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
-      {% if configured %}
-        <a class="webex-button" href="/auth/webex"><span class="webex-icon">W</span> Sign in with Webex</a>
-      {% else %}
-        <div class="login-error">Webex SSO environment variables have not been configured.</div>
-      {% endif %}
-      <p class="login-foot">Access is limited to authorized @bullfrog.net accounts.</p>
-    </section>
+<body class="site-login">
+  <div class="site-topbar">
+    <div class="site-container">
+      <span>Sales: <strong>(855) 365-9400</strong></span>
+      <span class="topbar-divider"></span>
+      <span>Support: <strong>(888) 392-0628</strong></span>
+      <span class="topbar-label">Bullfrog Technical Operations</span>
+    </div>
+  </div>
+
+  <header class="site-header">
+    <div class="site-container site-nav">
+      <a class="site-wordmark" href="https://www.bullfrog.net/" aria-label="Bullfrog home">
+        <span class="site-frog-mark">B</span>
+        <span><strong>BULLFROG</strong><small>GROUP</small></span>
+      </a>
+      <nav aria-label="Bullfrog links">
+        <a href="https://www.bullfrog.net/">Products</a>
+        <a href="https://www.bullfrog.net/">Solutions</a>
+        <a href="https://www.bullfrog.net/about">About</a>
+        <a href="https://www.bullfrog.net/faq">FAQ</a>
+      </nav>
+      <span class="internal-pill">INTERNAL PORTAL</span>
+    </div>
+  </header>
+
+  <main class="site-login-main">
+    <div class="site-container login-layout">
+      <section class="login-hero">
+        <div class="hero-kicker"><span></span> BULLFROG PROJECT COMMAND CENTER</div>
+        <h1>Smarter projects.<br><em>Clearer ownership.</em><br>Better outcomes.</h1>
+        <p>One secure place for Bullfrog teams to manage technical delivery, milestones, customer dependencies, go-lives, and the next action that keeps every project moving.</p>
+        <div class="hero-points">
+          <span>✓ Standardized delivery</span>
+          <span>✓ Secure Webex access</span>
+          <span>✓ One shared view</span>
+        </div>
+      </section>
+
+      <section class="site-signin-card">
+        <div class="signin-logo"><span class="site-frog-mark">B</span></div>
+        <p class="signin-kicker">SECURE TEAM ACCESS</p>
+        <h2>Welcome back.</h2>
+        <p>Sign in with your Bullfrog Webex account to continue to the Project Command Center.</p>
+
+        {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
+
+        {% if configured %}
+          <a class="webex-site-button" href="/auth/webex">
+            <span class="webex-orb">W</span>
+            <span>Sign in with Webex<small>Use your @bullfrog.net account</small></span>
+            <strong>→</strong>
+          </a>
+        {% else %}
+          <div class="login-error">Webex SSO environment variables have not been configured.</div>
+        {% endif %}
+
+        <div class="secure-note"><span>●</span> Protected by Webex OAuth</div>
+      </section>
+    </div>
   </main>
+
+  <footer class="site-login-footer">
+    <div class="site-container">
+      <span>© 2026 Bullfrog Group, LLC</span>
+      <span>Secure, AI-powered collaboration—expertly implemented.</span>
+    </div>
+  </footer>
 </body>
 </html>
