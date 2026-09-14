@@ -1,17 +1,22 @@
+import base64
+import binascii
+import os
+import secrets
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
-from fastapi.responses import HTMLResponse
+from urllib.parse import quote
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from database import Base, SessionLocal, engine, get_db
-from models import Milestone, Project, ProjectNote
+from models import Milestone, NoteAttachment, Project, ProjectNote
 from schemas import (
-    MilestoneCreate, MilestoneOut, MilestoneUpdate, NoteCreate, NoteOut,
+    MilestoneCreate, MilestoneOut, MilestoneUpdate, NoteOut,
     ProjectCreate, ProjectOut, ProjectUpdate,
 )
 
@@ -24,6 +29,10 @@ ENGINEERS = ["Gabriel", "Zach", "Michael"]
 SALES_OWNERS = ["Jack", "Matt"]
 CUSTOMER_SUCCESS_MANAGERS = ["Chad", "Ryan"]
 NEXT_ACTION_OWNERS = ENGINEERS + SALES_OWNERS + CUSTOMER_SUCCESS_MANAGERS
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+MAX_ATTACHMENTS_PER_NOTE = 5
+ALLOWED_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt"}
+INLINE_ATTACHMENT_TYPES = {"image/png", "image/jpeg", "application/pdf"}
 
 TEMPLATES = {
     "Webex Calling": ["Discovery Complete", "Network Review Complete", "Control Hub Provisioned",
@@ -39,7 +48,10 @@ TEMPLATES = {
 }
 
 def project_query():
-    return select(Project).options(selectinload(Project.milestones), selectinload(Project.notes))
+    return select(Project).options(
+        selectinload(Project.milestones),
+        selectinload(Project.notes).selectinload(ProjectNote.attachments),
+    )
 
 def seed_database():
     db = SessionLocal()
@@ -86,7 +98,41 @@ async def lifespan(app: FastAPI):
     seed_database()
     yield
 
-app = FastAPI(title="Bullfrog Project Command Center", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Bullfrog Project Command Center", version="1.1.0", lifespan=lifespan)
+
+@app.middleware("http")
+async def require_shared_login(request: Request, call_next):
+    if request.url.path == "/api/health" or request.url.path.startswith("/static/"):
+        return await call_next(request)
+
+    expected_user = os.getenv("APP_USERNAME", "")
+    expected_password = os.getenv("APP_PASSWORD", "")
+    if not expected_user or not expected_password:
+        return JSONResponse(
+            {"detail": "Authentication is not configured. Set APP_USERNAME and APP_PASSWORD."},
+            status_code=503,
+        )
+
+    authorization = request.headers.get("Authorization", "")
+    try:
+        scheme, token = authorization.split(" ", 1)
+        decoded = base64.b64decode(token).decode("utf-8")
+        username, password = decoded.split(":", 1)
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        scheme, username, password = "", "", ""
+
+    valid = (
+        scheme.lower() == "basic"
+        and secrets.compare_digest(username, expected_user)
+        and secrets.compare_digest(password, expected_password)
+    )
+    if not valid:
+        return Response(
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="Bullfrog Project Command Center"'},
+        )
+    return await call_next(request)
+
 BASE_DIR = Path(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
@@ -187,9 +233,55 @@ def delete_milestone(milestone_id: int, db: Session = Depends(get_db)):
     return Response(status_code=204)
 
 @app.post("/api/projects/{project_id}/notes", response_model=NoteOut, status_code=201)
-def add_note(project_id: int, payload: NoteCreate, db: Session = Depends(get_db)):
+def add_note(
+    project_id: int,
+    author: str = Form(...),
+    note: str = Form(...),
+    files: list[UploadFile] = File(default=[]),
+    db: Session = Depends(get_db),
+):
     if not db.get(Project, project_id):
         raise HTTPException(404, "Project not found")
-    note = ProjectNote(project_id=project_id, **payload.model_dump())
-    db.add(note); db.commit(); db.refresh(note)
-    return note
+    if not author.strip() or not note.strip():
+        raise HTTPException(422, "Author and note are required")
+    if len(files) > MAX_ATTACHMENTS_PER_NOTE:
+        raise HTTPException(413, f"Maximum {MAX_ATTACHMENTS_PER_NOTE} attachments per note")
+    item = ProjectNote(project_id=project_id, author=author.strip(), note=note.strip())
+    db.add(item)
+    db.flush()
+    for upload in files:
+        filename = Path(upload.filename or "").name
+        if not filename:
+            continue
+        extension = Path(filename).suffix.lower()
+        if extension not in ALLOWED_ATTACHMENT_EXTENSIONS:
+            raise HTTPException(415, f"Unsupported attachment type: {extension or 'unknown'}")
+        content = upload.file.read(MAX_ATTACHMENT_BYTES + 1)
+        if len(content) > MAX_ATTACHMENT_BYTES:
+            raise HTTPException(413, f"{filename} exceeds the 10 MB limit")
+        db.add(NoteAttachment(
+            note_id=item.id,
+            filename=filename,
+            content_type=upload.content_type or "application/octet-stream",
+            size_bytes=len(content),
+            data=content,
+        ))
+    db.commit()
+    return db.scalar(
+        select(ProjectNote)
+        .options(selectinload(ProjectNote.attachments))
+        .where(ProjectNote.id == item.id)
+    )
+
+@app.get("/api/attachments/{attachment_id}")
+def download_attachment(attachment_id: int, db: Session = Depends(get_db)):
+    attachment = db.get(NoteAttachment, attachment_id)
+    if not attachment:
+        raise HTTPException(404, "Attachment not found")
+    disposition = "inline" if attachment.content_type in INLINE_ATTACHMENT_TYPES else "attachment"
+    encoded_name = quote(attachment.filename)
+    return Response(
+        content=attachment.data,
+        media_type=attachment.content_type,
+        headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded_name}"},
+    )
