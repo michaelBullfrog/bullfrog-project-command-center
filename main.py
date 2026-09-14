@@ -1,15 +1,15 @@
-import base64
-import binascii
+import httpx
 import os
 import secrets
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -98,48 +98,150 @@ async def lifespan(app: FastAPI):
     seed_database()
     yield
 
-app = FastAPI(title="Bullfrog Project Command Center", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="Bullfrog Project Command Center", version="1.2.0", lifespan=lifespan)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSION_SECRET") or secrets.token_urlsafe(48),
+    same_site="lax",
+    https_only=True,
+    max_age=8 * 60 * 60,
+)
+
+def webex_oauth_configured() -> bool:
+    return all(os.getenv(key) for key in (
+        "WEBEX_CLIENT_ID", "WEBEX_CLIENT_SECRET", "WEBEX_REDIRECT_URI",
+        "WEBEX_ALLOWED_DOMAIN", "SESSION_SECRET",
+    ))
 
 @app.middleware("http")
-async def require_shared_login(request: Request, call_next):
-    if request.url.path == "/api/health" or request.url.path.startswith("/static/"):
+async def require_webex_login(request: Request, call_next):
+    path = request.url.path
+    public_path = (
+        path == "/api/health"
+        or path == "/login"
+        or path == "/auth/webex"
+        or path == "/auth/callback"
+        or path.startswith("/static/")
+    )
+    if public_path:
         return await call_next(request)
-
-    expected_user = os.getenv("APP_USERNAME", "")
-    expected_password = os.getenv("APP_PASSWORD", "")
-    if not expected_user or not expected_password:
+    if not webex_oauth_configured():
         return JSONResponse(
-            {"detail": "Authentication is not configured. Set APP_USERNAME and APP_PASSWORD."},
+            {"detail": "Webex SSO is not configured. Check the required environment variables."},
             status_code=503,
         )
-
-    authorization = request.headers.get("Authorization", "")
-    try:
-        scheme, token = authorization.split(" ", 1)
-        decoded = base64.b64decode(token).decode("utf-8")
-        username, password = decoded.split(":", 1)
-    except (ValueError, UnicodeDecodeError, binascii.Error):
-        scheme, username, password = "", "", ""
-
-    valid = (
-        scheme.lower() == "basic"
-        and secrets.compare_digest(username, expected_user)
-        and secrets.compare_digest(password, expected_password)
-    )
-    if not valid:
-        return Response(
-            status_code=401,
-            headers={"WWW-Authenticate": 'Basic realm="Bullfrog Project Command Center"'},
-        )
+    if not request.session.get("user"):
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+        return RedirectResponse("/login", status_code=303)
     return await call_next(request)
 
 BASE_DIR = Path(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    if request.session.get("user"):
+        return RedirectResponse("/", status_code=303)
+    return templates.TemplateResponse(
+        request=request,
+        name="login.html",
+        context={"configured": webex_oauth_configured(), "error": None},
+    )
+
+@app.get("/auth/webex")
+def webex_login(request: Request):
+    if not webex_oauth_configured():
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={"configured": False, "error": "Webex SSO is not configured."},
+            status_code=503,
+        )
+    state = secrets.token_urlsafe(32)
+    request.session["oauth_state"] = state
+    params = urlencode({
+        "response_type": "code",
+        "client_id": os.environ["WEBEX_CLIENT_ID"],
+        "redirect_uri": os.environ["WEBEX_REDIRECT_URI"],
+        "scope": "spark:people_read",
+        "state": state,
+    })
+    return RedirectResponse(f"https://webexapis.com/v1/authorize?{params}", status_code=303)
+
+@app.get("/auth/callback")
+async def webex_callback(request: Request, code: str | None = None, state: str | None = None):
+    expected_state = request.session.pop("oauth_state", None)
+    if not code or not state or not expected_state or not secrets.compare_digest(state, expected_state):
+        return templates.TemplateResponse(
+            request=request, name="login.html",
+            context={"configured": True, "error": "The Webex sign-in could not be verified. Please try again."},
+            status_code=400,
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            token_response = await client.post(
+                "https://webexapis.com/v1/access_token",
+                data={
+                    "grant_type": "authorization_code",
+                    "client_id": os.environ["WEBEX_CLIENT_ID"],
+                    "client_secret": os.environ["WEBEX_CLIENT_SECRET"],
+                    "code": code,
+                    "redirect_uri": os.environ["WEBEX_REDIRECT_URI"],
+                },
+                headers={"Accept": "application/json"},
+            )
+            token_response.raise_for_status()
+            access_token = token_response.json()["access_token"]
+            person_response = await client.get(
+                "https://webexapis.com/v1/people/me",
+                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            )
+            person_response.raise_for_status()
+            person = person_response.json()
+    except (httpx.HTTPError, KeyError, ValueError):
+        return templates.TemplateResponse(
+            request=request, name="login.html",
+            context={"configured": True, "error": "Webex could not complete the sign-in. Please try again."},
+            status_code=502,
+        )
+
+    emails = person.get("emails") or []
+    email = str(emails[0]).lower().strip() if emails else ""
+    allowed_domain = os.environ["WEBEX_ALLOWED_DOMAIN"].lower().lstrip("@").strip()
+    allowed_org = os.getenv("WEBEX_ALLOWED_ORG_ID", "").strip()
+    valid_domain = email.endswith(f"@{allowed_domain}")
+    valid_org = not allowed_org or person.get("orgId") == allowed_org
+    if not valid_domain or not valid_org:
+        request.session.clear()
+        return templates.TemplateResponse(
+            request=request, name="login.html",
+            context={"configured": True, "error": "This Webex account is not authorized for Bullfrog Projects."},
+            status_code=403,
+        )
+
+    request.session.clear()
+    request.session["user"] = {
+        "name": person.get("displayName") or email,
+        "email": email,
+        "org_id": person.get("orgId"),
+    }
+    return RedirectResponse("/", status_code=303)
+
+@app.get("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=303)
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
-    return templates.TemplateResponse(request=request, name="index.html")
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={"user": request.session.get("user")},
+    )
 
 @app.get("/api/health")
 def health():
