@@ -646,10 +646,32 @@ def update_milestone(milestone_id: int, payload: MilestoneUpdate, request: Reque
         setattr(item, key, value)
     item.completed_date = date.today() if item.status == "Complete" else None
     if old_status != item.status:
-        verb = "Completed" if item.status == "Complete" else f"Changed status of"
+        verb = "Completed" if item.status == "Complete" else "Changed status of"
         description = f"{verb} milestone {item.name}"
         record_activity(db, item.project_id, request, "milestone_updated", description,
                         field_name="milestone_status", old_value=old_status, new_value=item.status)
+
+        # Keep the project summary aligned with the milestone checklist. The
+        # first incomplete milestone becomes the next action automatically.
+        db.flush()
+        project = db.get(Project, item.project_id)
+        next_milestone = db.scalar(
+            select(Milestone)
+            .where(Milestone.project_id == item.project_id, Milestone.status != "Complete")
+            .order_by(Milestone.id.asc())
+            .limit(1)
+        )
+        next_action = next_milestone.name if next_milestone else "Review project for completion"
+        next_due = next_milestone.due_date if next_milestone else None
+        if project and (project.next_action != next_action or project.next_action_due != next_due):
+            old_action = project.next_action
+            project.next_action = next_action
+            project.next_action_due = next_due
+            record_activity(
+                db, project.id, request, "project_updated",
+                f"Advanced Next Action to {next_action}", field_name="next_action",
+                old_value=old_action, new_value=next_action,
+            )
     db.commit(); db.refresh(item)
     return item
 
