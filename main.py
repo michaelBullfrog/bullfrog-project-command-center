@@ -14,10 +14,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from database import Base, SessionLocal, engine, get_db
-from models import Milestone, NoteAttachment, Project, ProjectNote
+from models import CustomerContact, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote
 from schemas import (
-    MilestoneCreate, MilestoneOut, MilestoneUpdate, NoteOut,
-    ProjectCreate, ProjectOut, ProjectUpdate,
+    ContactCreate, ContactOut, ContactUpdate, MilestoneCreate, MilestoneOut,
+    MilestoneUpdate, NoteOut, ProjectCreate, ProjectOut, ProjectUpdate,
 )
 
 STAGES = ["Intake", "Technical Review", "Ready to Schedule", "Implementation", "Testing",
@@ -51,7 +51,44 @@ def project_query():
     return select(Project).options(
         selectinload(Project.milestones),
         selectinload(Project.notes).selectinload(ProjectNote.attachments),
+        selectinload(Project.contacts),
+        selectinload(Project.activities),
     )
+
+FIELD_LABELS = {
+    "customer": "Customer", "project_name": "Project name", "project_type": "Project type",
+    "technical_manager": "Customer Success Manager", "engineer": "Assigned Engineer",
+    "sales_owner": "Sales Owner", "stage": "Stage", "risk": "Risk", "priority": "Priority",
+    "target_date": "Target go-live", "next_action": "Next action",
+    "next_action_owner": "Next action owner", "next_action_due": "Next action due",
+    "blocked": "Blocked", "blocker": "Blocker", "scope": "Scope",
+}
+
+def activity_value(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+def current_actor(request: Request) -> tuple[str, str | None]:
+    user = request.session.get("user") or {}
+    return user.get("name", "Unknown user"), user.get("email")
+
+def record_activity(
+    db: Session, project_id: int, request: Request, action: str, description: str,
+    field_name: str | None = None, old_value=None, new_value=None,
+):
+    actor_name, actor_email = current_actor(request)
+    db.add(ProjectActivity(
+        project_id=project_id, actor_name=actor_name, actor_email=actor_email,
+        action=action, field_name=field_name,
+        old_value=activity_value(old_value) if old_value is not None else None,
+        new_value=activity_value(new_value) if new_value is not None else None,
+        description=description,
+    ))
 
 def seed_database():
     db = SessionLocal()
@@ -249,6 +286,10 @@ def home(request: Request):
 def health():
     return {"status": "ok"}
 
+@app.get("/api/me")
+def get_current_user(request: Request):
+    return request.session["user"]
+
 @app.get("/api/options")
 def options():
     return {"stages": STAGES, "risks": RISKS, "priorities": PRIORITIES,
@@ -274,12 +315,13 @@ def list_projects(
     return list(db.scalars(stmt).unique().all())
 
 @app.post("/api/projects", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
-def create_project(payload: ProjectCreate, db: Session = Depends(get_db)):
+def create_project(payload: ProjectCreate, request: Request, db: Session = Depends(get_db)):
     project = Project(**payload.model_dump())
     db.add(project)
     db.flush()
     for name in TEMPLATES.get(project.project_type, TEMPLATES["Other"]):
         db.add(Milestone(project_id=project.id, name=name))
+    record_activity(db, project.id, request, "project_created", f"Created project {project.project_name}")
     db.commit()
     return db.scalar(project_query().where(Project.id == project.id))
 
@@ -291,12 +333,20 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
     return project
 
 @app.put("/api/projects/{project_id}", response_model=ProjectOut)
-def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depends(get_db)):
+def update_project(project_id: int, payload: ProjectUpdate, request: Request, db: Session = Depends(get_db)):
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
     for key, value in payload.model_dump(exclude_unset=True).items():
-        setattr(project, key, value)
+        old_value = getattr(project, key)
+        if old_value != value:
+            setattr(project, key, value)
+            label = FIELD_LABELS.get(key, key.replace("_", " ").title())
+            record_activity(
+                db, project.id, request, "project_updated",
+                f"Changed {label} from {activity_value(old_value) or 'Not set'} to {activity_value(value) or 'Not set'}",
+                field_name=key, old_value=old_value, new_value=value,
+            )
     db.commit()
     return db.scalar(project_query().where(Project.id == project_id))
 
@@ -310,47 +360,99 @@ def delete_project(project_id: int, db: Session = Depends(get_db)):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 @app.post("/api/projects/{project_id}/milestones", response_model=MilestoneOut, status_code=201)
-def add_milestone(project_id: int, payload: MilestoneCreate, db: Session = Depends(get_db)):
+def add_milestone(project_id: int, payload: MilestoneCreate, request: Request, db: Session = Depends(get_db)):
     if not db.get(Project, project_id):
         raise HTTPException(404, "Project not found")
     item = Milestone(project_id=project_id, **payload.model_dump())
-    db.add(item); db.commit(); db.refresh(item)
+    db.add(item)
+    db.flush()
+    record_activity(db, project_id, request, "milestone_added", f"Added milestone {item.name}")
+    db.commit(); db.refresh(item)
     return item
 
 @app.patch("/api/milestones/{milestone_id}", response_model=MilestoneOut)
-def update_milestone(milestone_id: int, payload: MilestoneUpdate, db: Session = Depends(get_db)):
+def update_milestone(milestone_id: int, payload: MilestoneUpdate, request: Request, db: Session = Depends(get_db)):
     item = db.get(Milestone, milestone_id)
     if not item:
         raise HTTPException(404, "Milestone not found")
+    old_status = item.status
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(item, key, value)
     item.completed_date = date.today() if item.status == "Complete" else None
+    if old_status != item.status:
+        verb = "Completed" if item.status == "Complete" else f"Changed status of"
+        description = f"{verb} milestone {item.name}"
+        record_activity(db, item.project_id, request, "milestone_updated", description,
+                        field_name="milestone_status", old_value=old_status, new_value=item.status)
     db.commit(); db.refresh(item)
     return item
 
 @app.delete("/api/milestones/{milestone_id}", status_code=204)
-def delete_milestone(milestone_id: int, db: Session = Depends(get_db)):
+def delete_milestone(milestone_id: int, request: Request, db: Session = Depends(get_db)):
     item = db.get(Milestone, milestone_id)
     if not item:
         raise HTTPException(404, "Milestone not found")
+    record_activity(db, item.project_id, request, "milestone_deleted", f"Deleted milestone {item.name}")
     db.delete(item); db.commit()
+    return Response(status_code=204)
+
+@app.post("/api/projects/{project_id}/contacts", response_model=ContactOut, status_code=201)
+def add_contact(project_id: int, payload: ContactCreate, request: Request, db: Session = Depends(get_db)):
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "Project not found")
+    if payload.is_primary:
+        for existing in db.scalars(select(CustomerContact).where(CustomerContact.project_id == project_id)):
+            existing.is_primary = False
+    contact = CustomerContact(project_id=project_id, **payload.model_dump())
+    db.add(contact)
+    db.flush()
+    record_activity(db, project_id, request, "contact_added", f"Added customer contact {contact.name}")
+    db.commit(); db.refresh(contact)
+    return contact
+
+@app.put("/api/contacts/{contact_id}", response_model=ContactOut)
+def update_contact(contact_id: int, payload: ContactUpdate, request: Request, db: Session = Depends(get_db)):
+    contact = db.get(CustomerContact, contact_id)
+    if not contact:
+        raise HTTPException(404, "Contact not found")
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("is_primary"):
+        for existing in db.scalars(select(CustomerContact).where(
+            CustomerContact.project_id == contact.project_id,
+            CustomerContact.id != contact.id,
+        )):
+            existing.is_primary = False
+    for key, value in data.items():
+        setattr(contact, key, value)
+    record_activity(db, contact.project_id, request, "contact_updated", f"Updated customer contact {contact.name}")
+    db.commit(); db.refresh(contact)
+    return contact
+
+@app.delete("/api/contacts/{contact_id}", status_code=204)
+def delete_contact(contact_id: int, request: Request, db: Session = Depends(get_db)):
+    contact = db.get(CustomerContact, contact_id)
+    if not contact:
+        raise HTTPException(404, "Contact not found")
+    record_activity(db, contact.project_id, request, "contact_deleted", f"Deleted customer contact {contact.name}")
+    db.delete(contact); db.commit()
     return Response(status_code=204)
 
 @app.post("/api/projects/{project_id}/notes", response_model=NoteOut, status_code=201)
 def add_note(
     project_id: int,
-    author: str = Form(...),
+    request: Request,
     note: str = Form(...),
     files: list[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
 ):
     if not db.get(Project, project_id):
         raise HTTPException(404, "Project not found")
-    if not author.strip() or not note.strip():
-        raise HTTPException(422, "Author and note are required")
+    if not note.strip():
+        raise HTTPException(422, "Note is required")
     if len(files) > MAX_ATTACHMENTS_PER_NOTE:
         raise HTTPException(413, f"Maximum {MAX_ATTACHMENTS_PER_NOTE} attachments per note")
-    item = ProjectNote(project_id=project_id, author=author.strip(), note=note.strip())
+    actor_name, _ = current_actor(request)
+    item = ProjectNote(project_id=project_id, author=actor_name, note=note.strip())
     db.add(item)
     db.flush()
     for upload in files:
@@ -370,6 +472,9 @@ def add_note(
             size_bytes=len(content),
             data=content,
         ))
+    attachment_count = len([upload for upload in files if upload.filename])
+    detail = f"Added a project note with {attachment_count} attachment{'s' if attachment_count != 1 else ''}" if attachment_count else "Added a project note"
+    record_activity(db, project_id, request, "note_added", detail)
     db.commit()
     return db.scalar(
         select(ProjectNote)
