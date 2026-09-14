@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Sign In · Bullfrog Projects</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <section class="login-card">
+      <div class="login-brand"><span class="brand-mark">B</span><div><strong>BULLFROG</strong><small>PROJECT COMMAND CENTER</small></div></div>
+      <p class="eyebrow">TECHNICAL OPERATIONS</p>
+      <h1>Manage every project<br>from one place.</h1>
+      <p class="login-copy">Sign in with your Bullfrog Webex account to securely access projects, notes, milestones, and attachments.</p>
+      {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
+      {% if configured %}
+        <a class="webex-button" href="/auth/webex"><span class="webex-icon">W</span> Sign in with Webex</a>
+      {% else %}
+        <div class="login-error">Webex SSO environment variables have not been configured.</div>
+      {% endif %}
+      <p class="login-foot">Access is limited to authorized @bullfrog.net accounts.</p>
+    </section>
+  </main>
+</body>
+</html>
