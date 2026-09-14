@@ -1,10 +1,11 @@
-const state={projects:[],options:{},view:"dashboard",detailId:null};
+const state={projects:[],intake:[],options:{},view:"dashboard",detailId:null};
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const fmtDate=v=>v?new Date(v+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"Not set";
 const daysUntil=v=>v?Math.ceil((new Date(v+"T23:59:59")-new Date())/86400000):null;
 const safe=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const badge=v=>'<span class="badge '+safe(v)+'">'+safe(v)+'</span>';
 const fmtSize=n=>n<1024?n+" B":n<1048576?(n/1024).toFixed(1)+" KB":(n/1048576).toFixed(1)+" MB";
+const plainEmailBody=v=>{const doc=new DOMParser().parseFromString(String(v||""),"text/html");return (doc.body.textContent||"").trim()};
 const attachmentLinks=items=>(items||[]).length?'<div class="attachments">'+items.map(a=>'<a href="/api/attachments/'+a.id+'" target="_blank" rel="noopener">📎 '+safe(a.filename)+' <span>'+fmtSize(a.size_bytes)+'</span></a>').join("")+'</div>':"";
 const api=async(url,opts={})=>{const isForm=opts.body instanceof FormData;const headers=isForm?{}:{"Content-Type":"application/json"};const r=await fetch(url,{...opts,headers:{...headers,...(opts.headers||{})}});if(!r.ok){let e;try{e=await r.json()}catch{e={detail:r.statusText}}throw new Error(e.detail||"Request failed")}return r.status===204?null:r.json()};
 function toast(message){const el=$("#toast");el.textContent=message;el.classList.remove("hidden");setTimeout(()=>el.classList.add("hidden"),2600)}
@@ -12,7 +13,7 @@ function active(){return state.projects.filter(p=>p.stage!=="Complete")}
 function isOverdue(p){return p.next_action_due&&daysUntil(p.next_action_due)<0&&p.stage!=="Complete"}
 function needsAttention(p){return p.stage!=="Complete"&&(p.risk!=="Green"||p.blocked||isOverdue(p))}
 function row(p,compact=false){return '<tr data-id="'+p.id+'"><td><div class="item-title">'+safe(p.customer)+'</div><div class="item-sub">'+safe(p.project_name)+'</div></td>'+(compact?'<td>'+safe(p.project_type)+'</td>':'')+'<td>'+safe(p.engineer||"Unassigned")+'</td><td><span class="badge stage">'+safe(p.stage)+'</span></td><td>'+badge(p.risk)+'</td><td>'+fmtDate(p.target_date)+'</td><td><div>'+safe(p.next_action||"No next action")+'</div><div class="item-sub">'+safe(p.next_action_owner||"Unassigned")+'</div></td></tr>'}
-async function load(){[state.options,state.projects]=await Promise.all([api("/api/options"),api("/api/projects")]);fillOptions();renderAll()}
+async function load(){[state.options,state.projects,state.intake]=await Promise.all([api("/api/options"),api("/api/projects"),api("/api/intake")]);fillOptions();renderAll()}
 function fillOptions(){
  const maps=[["filter-stage",state.options.stages],["filter-risk",state.options.risks],["filter-type",state.options.project_types]];
  maps.forEach(([id,vals])=>{const el=$("#"+id);vals.forEach(v=>el.insertAdjacentHTML("beforeend",'<option>'+safe(v)+'</option>'))});
@@ -30,7 +31,7 @@ function fillOptions(){
   form.elements[n].innerHTML=(allowBlank?'<option value="">'+blankLabel+'</option>':"")+vals.map(v=>'<option>'+safe(v)+'</option>').join("")
  });
 }
-function renderAll(){renderDashboard();renderProjects();renderTeam();bindRows()}
+function renderAll(){renderDashboard();renderProjects();renderIntake();renderTeam();bindRows()}
 function renderDashboard(){
  const list=active(), reds=list.filter(p=>p.risk==="Red").length, yellows=list.filter(p=>p.risk==="Yellow").length;
  const overdue=list.filter(isOverdue).length;
@@ -49,14 +50,32 @@ function filtered(){
  return state.projects.filter(p=>(!q||(p.customer+" "+p.project_name).toLowerCase().includes(q))&&(!stage||p.stage===stage)&&(!risk||p.risk===risk)&&(!type||p.project_type===type));
 }
 function renderProjects(){const list=filtered();$("#project-count").textContent=list.length+" projects";$("#projects-table").innerHTML=list.length?list.map(p=>row(p)).join(""):'<tr><td colspan="6" class="empty">No matching projects.</td></tr>'}
+function renderIntake(){
+ const list=state.intake;
+ $("#intake-count").textContent=list.length+" pending";
+ const navCount=$("#intake-nav-count");navCount.textContent=list.length;navCount.classList.toggle("hidden",!list.length);
+ $("#intake-list").innerHTML=list.length?list.map(item=>{
+  const received=item.received_at||item.created_at;
+  const preview=plainEmailBody(item.body).slice(0,320);
+  return '<article class="intake-card"><div class="intake-main"><div class="intake-meta"><span class="badge stage">Pending Review</span><span>'+new Date(received).toLocaleString()+'</span></div><h3>'+safe(item.subject)+'</h3><div class="item-sub">From: '+safe(item.sender_name||"Unknown sender")+(item.sender_email?' &lt;'+safe(item.sender_email)+'&gt;':'')+'</div><p>'+safe(preview||"No email body was provided.")+(preview.length>=320?"…":"")+'</p></div><div class="intake-actions"><button class="primary" data-review-intake="'+item.id+'">Review & Create</button><button class="secondary danger" data-dismiss-intake="'+item.id+'">Dismiss</button></div></article>'
+ }).join(""):'<div class="empty intake-empty"><strong>Inbox is clear.</strong><span>New messages sent through services@ will appear here for review.</span></div>';
+ $("[data-review-intake]").forEach(x=>x.onclick=()=>openIntake(Number(x.dataset.reviewIntake)));
+ $("[data-dismiss-intake]").forEach(x=>x.onclick=async()=>{if(confirm("Dismiss this intake request?")){await api("/api/intake/"+x.dataset.dismissIntake+"/dismiss",{method:"PATCH"});await refresh();toast("Intake dismissed")}});
+}
+function openIntake(id){
+ const item=state.intake.find(x=>x.id===id);if(!item)return;
+ const sender=[item.sender_name,item.sender_email].filter(Boolean).join(" — ");
+ const body=plainEmailBody(item.body);
+ openForm({project_name:item.subject,stage:"Intake",risk:"Green",priority:"Normal",scope:(sender?"Requested by "+sender+"\n\n":"")+body},id);
+}
 function renderTeam(){
  const groups={};active().forEach(p=>{const n=p.engineer||"Unassigned";(groups[n]??=[]).push(p)});
  $("#team-grid").innerHTML=Object.entries(groups).sort().map(([name,items])=>'<article class="team-card"><h3>'+safe(name)+'</h3><div class="item-sub">Active project workload</div><div class="team-stats"><div><strong>'+items.length+'</strong><span class="small">Active</span></div><div><strong>'+items.filter(needsAttention).length+'</strong><span class="small">Attention</span></div><div><strong>'+items.filter(isOverdue).length+'</strong><span class="small">Overdue</span></div></div>'+items.slice(0,5).map(p=>'<div class="team-project" data-id="'+p.id+'"><div class="item-title">'+safe(p.customer)+'</div><div class="item-sub">'+safe(p.stage)+' · '+p.risk+'</div></div>').join("")+'</article>').join("")||'<div class="empty">No active assignments.</div>'
 }
 function bindRows(){$$("[data-id]").forEach(el=>el.onclick=()=>openDetail(Number(el.dataset.id)))}
-function setView(name){state.view=name;$$(".view").forEach(v=>v.classList.add("hidden"));$("#"+name+"-view").classList.remove("hidden");$$(".nav-link").forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",team:"Team View"}[name]}
-function openForm(project=null){
- const f=$("#project-form");f.reset();$("#project-id").value=project?.id||"";$("#form-title").textContent=project?"Edit Project":"New Project";
+function setView(name){state.view=name;$(".view").forEach(v=>v.classList.add("hidden"));$("#"+name+"-view").classList.remove("hidden");$(".nav-link").forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",intake:"Project Intake",team:"Team View"}[name]}
+function openForm(project=null,intakeId=null){
+ const f=$("#project-form");f.reset();$("#project-id").value=project?.id||"";$("#intake-id").value=intakeId||"";$("#form-title").textContent=intakeId?"Review Project Intake":project?"Edit Project":"New Project";
  f.elements.technical_manager.value=project?.technical_manager||"Chad";
  if(project)Object.entries(project).forEach(([k,v])=>{if(f.elements[k]){if(f.elements[k].type==="checkbox")f.elements[k].checked=!!v;else f.elements[k].value=v??""}});
  $("#project-modal").classList.remove("hidden")
@@ -94,8 +113,8 @@ async function openDetail(id,initialTab="milestones"){
  $$("[data-delete-contact]").forEach(x=>x.onclick=async()=>{if(confirm("Delete this customer contact?")){await api("/api/contacts/"+x.dataset.deleteContact,{method:"DELETE"});await refresh();openDetail(id,"contacts");toast("Contact deleted")}});
 }
 function close(id){$("#"+id).classList.add("hidden")}
-async function refresh(){state.projects=await api("/api/projects");renderAll()}
-$("#project-form").onsubmit=async e=>{e.preventDefault();const f=e.target,d=Object.fromEntries(new FormData(f));d.blocked=f.elements.blocked.checked;["target_date","next_action_due"].forEach(k=>{if(!d[k])delete d[k]});const id=$("#project-id").value;await api(id?"/api/projects/"+id:"/api/projects",{method:id?"PUT":"POST",body:JSON.stringify(d)});close("project-modal");await refresh();toast(id?"Project updated":"Project created")};
+async function refresh(){[state.projects,state.intake]=await Promise.all([api("/api/projects"),api("/api/intake")]);renderAll()}
+$("#project-form").onsubmit=async e=>{e.preventDefault();const f=e.target,d=Object.fromEntries(new FormData(f));d.blocked=f.elements.blocked.checked;["target_date","next_action_due"].forEach(k=>{if(!d[k])delete d[k]});const id=$("#project-id").value,intakeId=$("#intake-id").value;const url=intakeId?"/api/intake/"+intakeId+"/convert":id?"/api/projects/"+id:"/api/projects";const body=intakeId?{project:d}:d;await api(url,{method:id?"PUT":"POST",body:JSON.stringify(body)});close("project-modal");await refresh();if(intakeId)setView("projects");toast(id?"Project updated":intakeId?"Intake converted to project":"Project created")};
 $$(".nav-link").forEach(n=>n.onclick=()=>setView(n.dataset.view));$$("[data-go]").forEach(n=>n.onclick=()=>setView(n.dataset.go));
 ["header-new","sidebar-new"].forEach(id=>$("#"+id).onclick=()=>openForm());$$("[data-close]").forEach(x=>x.onclick=()=>close(x.dataset.close));
 ["search","filter-stage","filter-risk","filter-type"].forEach(id=>$("#"+id).addEventListener(id==="search"?"input":"change",()=>{renderProjects();bindRows()}));
