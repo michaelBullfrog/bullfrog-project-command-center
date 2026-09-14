@@ -2,7 +2,7 @@ import httpx
 import os
 import secrets
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlencode
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
@@ -14,10 +14,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from database import Base, SessionLocal, engine, get_db
-from models import CustomerContact, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote
+from models import CustomerContact, IntakeEmail, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote
 from schemas import (
-    ContactCreate, ContactOut, ContactUpdate, MilestoneCreate, MilestoneOut,
-    MilestoneUpdate, NoteOut, ProjectCreate, ProjectOut, ProjectUpdate,
+    ContactCreate, ContactOut, ContactUpdate, IntakeConvert, IntakeEmailCreate, IntakeEmailOut,
+    MilestoneCreate, MilestoneOut, MilestoneUpdate, NoteOut, ProjectCreate, ProjectOut, ProjectUpdate,
 )
 
 STAGES = ["Intake", "Technical Review", "Ready to Schedule", "Implementation", "Testing",
@@ -150,6 +150,7 @@ async def require_webex_login(request: Request, call_next):
         or path == "/login"
         or path == "/auth/webex"
         or path == "/auth/callback"
+        or path == "/api/intake/email"
         or path.startswith("/static/")
     )
     if public_path:
@@ -289,6 +290,70 @@ def health():
 @app.get("/api/me")
 def get_current_user(request: Request):
     return request.session["user"]
+
+@app.post("/api/intake/email", response_model=IntakeEmailOut, status_code=status.HTTP_201_CREATED)
+def receive_intake_email(
+    payload: IntakeEmailCreate, request: Request, response: Response,
+    db: Session = Depends(get_db),
+):
+    configured_secret = os.getenv("INTAKE_WEBHOOK_SECRET", "")
+    supplied_secret = request.headers.get("X-Intake-Secret", "")
+    if not configured_secret:
+        raise HTTPException(503, "Email intake is not configured")
+    if not supplied_secret or not secrets.compare_digest(supplied_secret, configured_secret):
+        raise HTTPException(401, "Invalid intake secret")
+
+    existing = db.scalar(select(IntakeEmail).where(IntakeEmail.message_id == payload.message_id))
+    if existing:
+        response.status_code = status.HTTP_200_OK
+        return existing
+
+    item = IntakeEmail(**payload.model_dump())
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+@app.get("/api/intake", response_model=list[IntakeEmailOut])
+def list_intake(status_filter: str = Query("Pending", alias="status"), db: Session = Depends(get_db)):
+    stmt = select(IntakeEmail).order_by(IntakeEmail.received_at.desc().nullslast(), IntakeEmail.created_at.desc())
+    if status_filter:
+        stmt = stmt.where(IntakeEmail.status == status_filter)
+    return list(db.scalars(stmt).all())
+
+@app.patch("/api/intake/{intake_id}/dismiss", response_model=IntakeEmailOut)
+def dismiss_intake(intake_id: int, db: Session = Depends(get_db)):
+    item = db.get(IntakeEmail, intake_id)
+    if not item:
+        raise HTTPException(404, "Intake email not found")
+    if item.status == "Converted":
+        raise HTTPException(409, "Converted intake cannot be dismissed")
+    item.status = "Dismissed"
+    db.commit()
+    db.refresh(item)
+    return item
+
+@app.post("/api/intake/{intake_id}/convert", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
+def convert_intake(intake_id: int, payload: IntakeConvert, request: Request, db: Session = Depends(get_db)):
+    item = db.get(IntakeEmail, intake_id)
+    if not item:
+        raise HTTPException(404, "Intake email not found")
+    if item.status != "Pending":
+        raise HTTPException(409, "This intake email has already been handled")
+
+    project = Project(**payload.project.model_dump())
+    db.add(project)
+    db.flush()
+    for name in TEMPLATES.get(project.project_type, TEMPLATES["Other"]):
+        db.add(Milestone(project_id=project.id, name=name))
+    record_activity(
+        db, project.id, request, "project_created",
+        f"Created project from email intake: {item.subject}",
+    )
+    item.status = "Converted"
+    item.project_id = project.id
+    db.commit()
+    return db.scalar(project_query().where(Project.id == project.id))
 
 @app.get("/api/options")
 def options():
