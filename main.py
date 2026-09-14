@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
-from sqlalchemy import or_, select
+from sqlalchemy import inspect, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from database import Base, SessionLocal, engine, get_db
@@ -61,7 +61,7 @@ def project_query():
     )
 
 FIELD_LABELS = {
-    "customer": "Customer", "project_name": "Project name", "project_type": "Project type",
+    "customer": "Customer", "customer_id": "Rev PSA Customer ID", "project_name": "Project name", "project_type": "Project type",
     "technical_manager": "Customer Success Manager", "engineer": "Assigned Engineer",
     "sales_owner": "Sales Owner", "stage": "Stage", "risk": "Risk", "priority": "Priority",
     "target_date": "Target go-live", "next_action": "Next action",
@@ -278,9 +278,80 @@ async def graph_subscription_maintenance():
             logger.exception("Unable to create or renew Microsoft Graph subscription")
         await asyncio.sleep(12 * 60 * 60)
 
+def ensure_database_schema():
+    # create_all handles fresh databases; this small compatibility migration
+    # adds Customer ID to existing Render PostgreSQL databases.
+    columns = {column["name"] for column in inspect(engine).get_columns("projects")}
+    if "customer_id" not in columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE projects ADD COLUMN customer_id VARCHAR(50)"))
+
+def revio_configured() -> bool:
+    return bool(os.getenv("REVIO_API_KEY", "").strip())
+
+def revio_records(payload) -> list[dict]:
+    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        for key in ("items", "customers", "records", "results", "data"):
+            items = data.get(key)
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+    return []
+
+def revio_value(item: dict, *keys):
+    lowered = {str(key).lower(): value for key, value in item.items()}
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ""):
+            return value
+        value = lowered.get(key.lower())
+        if value not in (None, ""):
+            return value
+    return None
+
+async def revio_lookup_customer(customer_id: str) -> dict | None:
+    base_url = os.getenv("REVIO_BASE_URL", "https://api.psarev.io").rstrip("/")
+    host = os.getenv("REVIO_HOST", "bullfrog.psarev.io").strip()
+    exchange_path = os.getenv("REVIO_TOKEN_EXCHANGE_PATH", "/api/v1/auth/api-key/exchange")
+    customers_path = os.getenv("REVIO_CUSTOMER_LIST_PATH", "/psac/api/v1/customer-list")
+    api_key = os.getenv("REVIO_API_KEY", "").strip()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        exchange = await client.post(
+            f"{base_url}/{exchange_path.lstrip('/')}",
+            json={"apiKey": api_key}, headers={"Accept": "application/json"},
+        )
+        exchange.raise_for_status()
+        token = ((exchange.json().get("data") or {}).get("token"))
+        if not token:
+            raise RuntimeError("Rev PSA did not return an access token")
+        headers = {"Authorization": f"Bearer {token}", "X-Revio-Host": host, "Accept": "application/json"}
+        page_size = 100
+        for page in range(1, 51):
+            response = await client.get(
+                f"{base_url}/{customers_path.lstrip('/')}", headers=headers,
+                params={"page": page, "pageSize": page_size},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            records = revio_records(payload)
+            for item in records:
+                item_id = revio_value(item, "customerId", "customer_id", "id")
+                if str(item_id or "").strip() == customer_id:
+                    name = revio_value(item, "customerName", "companyName", "businessName", "displayName", "name")
+                    if not name:
+                        raise RuntimeError("Rev PSA returned the customer without a name")
+                    return {"customer_id": customer_id, "customer_name": str(name), "revio_record": item}
+            last_page = revio_value(payload, "lastPage", "last_page", "totalPages", "total_pages") if isinstance(payload, dict) else None
+            if not records or len(records) < page_size or (last_page and page >= int(last_page)):
+                break
+    return None
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    ensure_database_schema()
     seed_database()
     graph_task = asyncio.create_task(graph_subscription_maintenance())
     try:
@@ -288,7 +359,7 @@ async def lifespan(app: FastAPI):
     finally:
         graph_task.cancel()
 
-app = FastAPI(title="Bullfrog Project Command Center", version="1.4.0", lifespan=lifespan)
+app = FastAPI(title="Bullfrog Project Command Center", version="1.5.0", lifespan=lifespan)
 def webex_oauth_configured() -> bool:
     return all(os.getenv(key) for key in (
         "WEBEX_CLIENT_ID", "WEBEX_CLIENT_SECRET", "WEBEX_REDIRECT_URI",
@@ -555,6 +626,25 @@ def convert_intake(intake_id: int, payload: IntakeConvert, request: Request, db:
     item.project_id = project.id
     db.commit()
     return db.scalar(project_query().where(Project.id == project.id))
+
+@app.get("/api/revio/customers/{customer_id}")
+async def lookup_revio_customer(customer_id: str):
+    clean_id = customer_id.strip()
+    if not clean_id.isdigit():
+        raise HTTPException(400, "Customer ID must contain numbers only")
+    if not revio_configured():
+        raise HTTPException(503, "Rev PSA is not configured")
+    try:
+        customer = await revio_lookup_customer(clean_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (401, 403):
+            raise HTTPException(502, "Rev PSA rejected the API key or its permissions")
+        raise HTTPException(502, f"Rev PSA lookup failed with status {exc.response.status_code}")
+    except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
+        raise HTTPException(502, str(exc))
+    if not customer:
+        raise HTTPException(404, f"No Rev PSA customer was found for ID {clean_id}")
+    return {"customer_id": customer["customer_id"], "customer_name": customer["customer_name"]}
 
 @app.get("/api/options")
 def options():
