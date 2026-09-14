@@ -6,6 +6,12 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      WEBEX_CLIENT_ID: test-client
+      WEBEX_CLIENT_SECRET: test-secret
+      WEBEX_REDIRECT_URI: https://example.com/auth/callback
+      WEBEX_ALLOWED_DOMAIN: bullfrog.net
+      SESSION_SECRET: test-session-secret-for-ci-only
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -13,4 +19,18 @@ jobs:
           python-version: "3.13"
       - run: pip install -r requirements.txt
       - run: python -m compileall -q .
-      - run: python -c "from main import app; assert app.title == 'Bullfrog Project Command Center'"
+      - name: Test application startup and authentication routing
+        run: |
+          python - <<'PY'
+          from fastapi.testclient import TestClient
+          from main import app
+
+          with TestClient(app) as client:
+              health = client.get("/api/health")
+              assert health.status_code == 200
+              root = client.get("/", follow_redirects=False)
+              assert root.status_code == 303
+              assert root.headers["location"] == "/login"
+              login = client.get("/login")
+              assert login.status_code == 200
+          PY
