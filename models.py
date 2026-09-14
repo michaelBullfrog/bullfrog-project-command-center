@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, LargeBinary, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
@@ -106,3 +106,19 @@ class ProjectActivity(Base):
     description: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     project: Mapped[Project] = relationship(back_populates="activities")
+
+
+class IntakeEmail(Base):
+    __tablename__ = "intake_emails"
+    __table_args__ = (UniqueConstraint("message_id", name="uq_intake_email_message_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    message_id: Mapped[str] = mapped_column(String(500), index=True)
+    sender_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    sender_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    subject: Mapped[str] = mapped_column(String(500))
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="Pending", index=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
