@@ -13,7 +13,7 @@ class Project(Base):
     customer: Mapped[str] = mapped_column(String(160), index=True)
     project_name: Mapped[str] = mapped_column(String(200))
     project_type: Mapped[str] = mapped_column(String(60), index=True)
-    technical_manager: Mapped[str] = mapped_column(String(100), default="Mike")
+    technical_manager: Mapped[str] = mapped_column(String(100), default="Chad")
     engineer: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     sales_owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
     stage: Mapped[str] = mapped_column(String(60), default="Intake", index=True)
