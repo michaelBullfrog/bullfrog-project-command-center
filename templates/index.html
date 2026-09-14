@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Bullfrog Project Command Center</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">B</span><div><strong>BULLFROG</strong><small>PROJECTS</small></div></div>
+    <nav>
+      <button class="nav-link active" data-view="dashboard">▦ <span>Dashboard</span></button>
+      <button class="nav-link" data-view="projects">☷ <span>Projects</span></button>
+      <button class="nav-link" data-view="team">♙ <span>Team View</span></button>
+    </nav>
+    <button class="primary wide" id="sidebar-new">＋ New Project</button>
+    <div class="sidebar-foot"><span class="live-dot"></span> System online</div>
+  </aside>
+
+  <main>
+    <header>
+      <div><p class="eyebrow">TECHNICAL OPERATIONS</p><h1 id="page-title">Project Command Center</h1></div>
+      <div class="header-actions"><span id="today"></span><button class="primary" id="header-new">＋ New Project</button></div>
+    </header>
+
+    <section id="dashboard-view" class="view">
+      <div class="metric-grid" id="metrics"></div>
+      <div class="grid two">
+        <article class="panel"><div class="panel-head"><div><p class="eyebrow">ACTION QUEUE</p><h2>Needs Attention</h2></div><button class="text-btn" data-go="projects">View all →</button></div><div id="attention-list"></div></article>
+        <article class="panel"><div class="panel-head"><div><p class="eyebrow">SCHEDULE</p><h2>Upcoming Go-Lives</h2></div></div><div id="golive-list"></div></article>
+      </div>
+      <article class="panel"><div class="panel-head"><div><p class="eyebrow">PORTFOLIO</p><h2>Active Projects</h2></div></div><div class="table-wrap"><table><thead><tr><th>Customer / Project</th><th>Type</th><th>Engineer</th><th>Stage</th><th>Risk</th><th>Go-Live</th><th>Next Action</th></tr></thead><tbody id="dashboard-projects"></tbody></table></div></article>
+    </section>
+
+    <section id="projects-view" class="view hidden">
+      <article class="panel">
+        <div class="panel-head"><div><p class="eyebrow">ALL WORK</p><h2>Projects</h2></div><span id="project-count" class="count-pill"></span></div>
+        <div class="filters">
+          <input id="search" type="search" placeholder="Search customer or project…">
+          <select id="filter-stage"><option value="">All stages</option></select>
+          <select id="filter-risk"><option value="">All risks</option></select>
+          <select id="filter-type"><option value="">All types</option></select>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>Customer / Project</th><th>Engineer</th><th>Stage</th><th>Risk</th><th>Target</th><th>Next Action</th></tr></thead><tbody id="projects-table"></tbody></table></div>
+      </article>
+    </section>
+
+    <section id="team-view" class="view hidden">
+      <div class="panel-head standalone"><div><p class="eyebrow">CAPACITY</p><h2>Engineer Workload</h2></div></div>
+      <div class="team-grid" id="team-grid"></div>
+    </section>
+  </main>
+
+  <div class="modal hidden" id="project-modal">
+    <div class="modal-card form-card">
+      <button class="modal-close" data-close="project-modal">×</button>
+      <p class="eyebrow">PROJECT INTAKE</p><h2 id="form-title">New Project</h2>
+      <form id="project-form">
+        <input type="hidden" id="project-id">
+        <div class="form-grid">
+          <label>Customer*<input name="customer" required></label>
+          <label>Project name*<input name="project_name" required></label>
+          <label>Project type<select name="project_type"></select></label>
+          <label>Target go-live<input name="target_date" type="date"></label>
+          <label>Technical manager<input name="technical_manager" value="Mike"></label>
+          <label>Assigned engineer<input name="engineer" placeholder="TBD"></label>
+          <label>Sales owner<input name="sales_owner"></label>
+          <label>Priority<select name="priority"></select></label>
+          <label>Stage<select name="stage"></select></label>
+          <label>Risk<select name="risk"></select></label>
+          <label>Next action owner<input name="next_action_owner"></label>
+          <label>Next action due<input name="next_action_due" type="date"></label>
+          <label class="span-2">Next action<input name="next_action"></label>
+          <label class="span-2">Scope<textarea name="scope" rows="3"></textarea></label>
+          <label class="check"><input name="blocked" type="checkbox"> Project is blocked</label>
+          <label class="span-2">Blocker<textarea name="blocker" rows="2"></textarea></label>
+        </div>
+        <div class="form-actions"><button type="button" class="secondary" data-close="project-modal">Cancel</button><button class="primary" type="submit">Save Project</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="detail-modal">
+    <div class="modal-card detail-card"><button class="modal-close" data-close="detail-modal">×</button><div id="project-detail"></div></div>
+  </div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

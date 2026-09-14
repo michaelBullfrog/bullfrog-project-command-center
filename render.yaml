@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: bullfrog-project-command-center
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bullfrog-project-db
+          property: connectionString
+
+databases:
+  - name: bullfrog-project-db
+    plan: free
+    databaseName: bullfrog_projects
+    user: bullfrog_projects_user

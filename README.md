@@ -1,3 +1,67 @@
 # Bullfrog Project Command Center
 
-Initial repository setup. Application files are added in the next commit.
+A lightweight internal project-management application for Bullfrog technical operations. It provides a manager-first dashboard, standardized project intake, milestones, notes, risk tracking, next actions, and engineer workload visibility.
+
+## Included in V1
+
+- Dashboard with active, at-risk, overdue, and upcoming go-live counts
+- Needs Attention and Upcoming Go-Lives queues
+- Searchable/filterable project list
+- New and edit project forms
+- Project detail view with scope, blockers, next action, milestones, and notes
+- Engineer workload view
+- Automatic milestone templates for Webex Calling, Webex Contact Center, Meraki, Network, and Other
+- FastAPI REST API
+- PostgreSQL production support and SQLite local fallback
+- Sample data on a new empty database
+- Render Blueprint configuration
+
+## Run locally
+
+1. Install Python 3.11 or newer.
+2. Clone the repository.
+3. Create a virtual environment:
+
+   ```powershell
+   py -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   ```
+
+4. Install and start:
+
+   ```powershell
+   pip install -r requirements.txt
+   uvicorn main:app --reload
+   ```
+
+5. Open [http://localhost:8000](http://localhost:8000).
+
+No environment variable is required locally; the app creates `bullfrog_projects.db`.
+
+## Deploy to Render
+
+1. In Render, select **New + → Blueprint**.
+2. Connect this GitHub repository.
+3. Approve the resources from `render.yaml`.
+4. Select **Apply**.
+
+Render creates the web service and PostgreSQL database, connects `DATABASE_URL`, and deploys the app. Open the generated service URL when deployment is complete.
+
+> The Render free PostgreSQL plan may expire or change based on Render's current offerings. Choose a paid database before putting production project data into the application.
+
+## API
+
+Interactive API documentation is available at `/docs`. Health check: `/api/health`.
+
+Primary endpoints:
+
+- `GET/POST /api/projects`
+- `GET/PUT/DELETE /api/projects/{id}`
+- `POST /api/projects/{id}/milestones`
+- `PATCH/DELETE /api/milestones/{id}`
+- `POST /api/projects/{id}/notes`
+- `GET /api/options`
+
+## V1 security note
+
+Authentication is intentionally not included in this starter build. Keep the Render service private during testing and do not enter sensitive customer information until authentication is added.
