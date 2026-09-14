@@ -20,6 +20,10 @@ STAGES = ["Intake", "Technical Review", "Ready to Schedule", "Implementation", "
 RISKS = ["Green", "Yellow", "Red"]
 PRIORITIES = ["Normal", "High", "Critical"]
 PROJECT_TYPES = ["Webex Calling", "Webex Contact Center", "Meraki", "Network", "Other"]
+ENGINEERS = ["Gabriel", "Zach", "Michael"]
+SALES_OWNERS = ["Jack", "Matt"]
+CUSTOMER_SUCCESS_MANAGERS = ["Chad", "Ryan"]
+NEXT_ACTION_OWNERS = ENGINEERS + SALES_OWNERS + CUSTOMER_SUCCESS_MANAGERS
 
 TEMPLATES = {
     "Webex Calling": ["Discovery Complete", "Network Review Complete", "Control Hub Provisioned",
@@ -40,6 +44,11 @@ def project_query():
 def seed_database():
     db = SessionLocal()
     try:
+        # One-time compatibility cleanup for projects created before the
+        # Technical Manager field became Customer Success Manager.
+        for project in db.scalars(select(Project).where(Project.technical_manager == "Mike")):
+            project.technical_manager = "Chad"
+        db.commit()
         if db.scalar(select(Project.id).limit(1)):
             return
         today = date.today()
@@ -93,7 +102,10 @@ def health():
 @app.get("/api/options")
 def options():
     return {"stages": STAGES, "risks": RISKS, "priorities": PRIORITIES,
-            "project_types": PROJECT_TYPES, "templates": TEMPLATES}
+            "project_types": PROJECT_TYPES, "templates": TEMPLATES,
+            "engineers": ENGINEERS, "sales_owners": SALES_OWNERS,
+            "customer_success_managers": CUSTOMER_SUCCESS_MANAGERS,
+            "next_action_owners": NEXT_ACTION_OWNERS}
 
 @app.get("/api/projects", response_model=list[ProjectOut])
 def list_projects(
