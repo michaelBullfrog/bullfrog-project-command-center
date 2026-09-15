@@ -1,10 +1,13 @@
 import asyncio
+import html
 import httpx
 import logging
+import re
 import os
 import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import quote, unquote, urlencode
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
@@ -16,7 +19,7 @@ from sqlalchemy import inspect, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from database import Base, SessionLocal, engine, get_db
-from models import CustomerContact, IntakeEmail, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote
+from models import CustomerContact, HardwareOrderWorkflow, IntakeEmail, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote
 from schemas import (
     ContactCreate, ContactOut, ContactUpdate, IntakeConvert, IntakeEmailCreate, IntakeEmailOut,
     MilestoneCreate, MilestoneOut, MilestoneUpdate, NoteOut, ProjectCreate, ProjectOut, ProjectUpdate,
@@ -40,16 +43,16 @@ GRAPH_API = "https://graph.microsoft.com/v1.0"
 logger = logging.getLogger("bullfrog.graph")
 
 TEMPLATES = {
-    "Webex Calling": ["Discovery Complete", "Network Review Complete", "Control Hub Provisioned",
+    "Webex Calling": ["Quote Signed", "Discovery Complete", "Network Review Complete", "Control Hub Provisioned",
         "Users and Licenses Configured", "Number Port Submitted", "FOC Received",
         "Devices Configured", "Call Flows Tested", "Customer Training", "Go Live", "Closeout"],
-    "Webex Contact Center": ["Discovery Complete", "Call Flow Design", "Queue and Team Design",
+    "Webex Contact Center": ["Quote Signed", "Discovery Complete", "Call Flow Design", "Queue and Team Design",
         "Agent Setup", "Integrations", "Flow Build", "Testing", "Supervisor Training", "Go Live", "Closeout"],
-    "Meraki": ["Discovery Complete", "Network Design", "Hardware Received", "Configuration",
+    "Meraki": ["Quote Signed", "Discovery Complete", "Network Design", "Hardware Received", "Configuration",
         "Staging", "Installation", "Validation", "Documentation", "Closeout"],
-    "Network": ["Discovery Complete", "Network Design", "Hardware Received", "Configuration",
+    "Network": ["Quote Signed", "Discovery Complete", "Network Design", "Hardware Received", "Configuration",
         "Installation", "Validation", "Documentation", "Closeout"],
-    "Other": ["Discovery Complete", "Planning", "Implementation", "Testing", "Customer Acceptance", "Closeout"],
+    "Other": ["Quote Signed", "Discovery Complete", "Planning", "Implementation", "Testing", "Customer Acceptance", "Closeout"],
 }
 
 def project_query():
@@ -342,16 +345,226 @@ async def revio_lookup_customer(customer_id: str) -> dict | None:
         resolved_id = revio_value(customer, "customerId", "customer_id", "id") or customer_id
         return {"customer_id": str(resolved_id), "customer_name": str(name), "revio_record": customer}
 
+
+def normalize_customer_name(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").casefold())
+
+def revio_billing_configured() -> bool:
+    return all((os.getenv(key) or "").strip() for key in (
+        "REVIO_BILLING_USERNAME", "REVIO_BILLING_CLIENT_CODE", "REVIO_BILLING_PASSWORD",
+    ))
+
+def revio_billing_customer_name(customer: dict) -> str:
+    direct = revio_value(customer, "name", "customer_name", "customerName", "company_name", "companyName")
+    if direct:
+        return str(direct).strip()
+    for address_key in ("billing_address", "service_address", "listing_address"):
+        address = customer.get(address_key) or {}
+        company = revio_value(address, "company_name", "companyName")
+        if company:
+            return str(company).strip()
+        first = str(revio_value(address, "first_name", "firstName") or "").strip()
+        last = str(revio_value(address, "last_name", "lastName") or "").strip()
+        if first or last:
+            return f"{first} {last}".strip()
+    return ""
+
+async def revio_billing_find_customer(customer_name: str) -> dict:
+    if not revio_billing_configured():
+        raise RuntimeError("Rev.io Billing is not configured")
+    base_url = os.getenv("REVIO_BILLING_BASE_URL", "https://restapi.rev.io").rstrip("/")
+    username = os.environ["REVIO_BILLING_USERNAME"].strip()
+    client_code = os.environ["REVIO_BILLING_CLIENT_CODE"].strip()
+    password = os.environ["REVIO_BILLING_PASSWORD"]
+    auth = httpx.BasicAuth(f"{username}@{client_code}", password)
+    async with httpx.AsyncClient(timeout=30.0, auth=auth) as client:
+        response = await client.get(
+            f"{base_url}/v1/Customers",
+            params={"search.name": customer_name, "search.page_size": 25},
+            headers={"Accept": "application/json"},
+        )
+        response.raise_for_status()
+    payload = response.json()
+    records = payload.get("records", []) if isinstance(payload, dict) else []
+    exact = [
+        item for item in records
+        if isinstance(item, dict)
+        and normalize_customer_name(revio_billing_customer_name(item)) == normalize_customer_name(customer_name)
+    ]
+    if not exact:
+        raise RuntimeError(f'No exact Rev.io Billing customer match was found for "{customer_name}"')
+    if len(exact) > 1:
+        raise RuntimeError(f'Multiple Rev.io Billing customers matched "{customer_name}"')
+    customer = exact[0]
+    customer_id = revio_value(customer, "customer_id", "customerId", "id")
+    finance = customer.get("finance") or {}
+    balance_value = revio_value(finance, "balance")
+    if customer_id in (None, ""):
+        raise RuntimeError("Rev.io Billing returned the customer without an ID")
+    if balance_value in (None, ""):
+        raise RuntimeError("Rev.io Billing returned the customer without an account balance")
+    try:
+        balance = Decimal(str(balance_value))
+    except InvalidOperation as exc:
+        raise RuntimeError("Rev.io Billing returned an invalid account balance") from exc
+    return {"customer_id": str(customer_id), "customer_name": revio_billing_customer_name(customer), "balance": balance}
+
+def record_automation_activity(db: Session, project_id: int, action: str, description: str, old_value=None, new_value=None):
+    db.add(ProjectActivity(
+        project_id=project_id, actor_name="Bullfrog Automation", actor_email=None,
+        action=action, field_name="hardware_order_workflow",
+        old_value=activity_value(old_value) if old_value is not None else None,
+        new_value=activity_value(new_value) if new_value is not None else None,
+        description=description,
+    ))
+
+async def graph_send_hardware_order_email(project: dict, billing_customer: dict):
+    if not graph_configured():
+        raise RuntimeError("Microsoft Graph is not configured")
+    sender = quote(os.environ["MS_INTAKE_MAILBOX"], safe="")
+    recipient = os.getenv("HARDWARE_ORDER_EMAIL", "sales@bullfrog.net").strip()
+    app_url = (os.getenv("APP_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
+    customer = html.escape(project["customer"])
+    project_name = html.escape(project["project_name"])
+    project_type = html.escape(project["project_type"])
+    sales_owner = html.escape(project.get("sales_owner") or "Not assigned")
+    billing_id = html.escape(billing_customer["customer_id"])
+    project_link = f'<p><a href="{html.escape(app_url)}">Open Bullfrog Projects</a></p>' if app_url else ""
+    body = f"""
+        <p>The signed quote for <strong>{customer}</strong> has cleared the Rev.io Billing balance check.</p>
+        <table>
+          <tr><td><strong>Rev.io Billing Customer ID</strong></td><td>{billing_id}</td></tr>
+          <tr><td><strong>Project</strong></td><td>{project_name}</td></tr>
+          <tr><td><strong>Project Type</strong></td><td>{project_type}</td></tr>
+          <tr><td><strong>Sales Owner</strong></td><td>{sales_owner}</td></tr>
+          <tr><td><strong>Verified Balance</strong></td><td>$0.00</td></tr>
+        </table>
+        <p><strong>Please order the hardware for this customer.</strong></p>
+        {project_link}
+    """
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        token = await graph_access_token(client)
+        response = await client.post(
+            f"{GRAPH_API}/users/{sender}/sendMail",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={
+                "message": {
+                    "subject": f"Hardware order ready — {project['customer']}",
+                    "body": {"contentType": "HTML", "content": body},
+                    "toRecipients": [{"emailAddress": {"address": recipient}}],
+                },
+                "saveToSentItems": True,
+            },
+        )
+        response.raise_for_status()
+
+async def process_hardware_order_workflow(project_id: int):
+    db = SessionLocal()
+    workflow = None
+    try:
+        workflow = db.scalar(select(HardwareOrderWorkflow).where(HardwareOrderWorkflow.project_id == project_id))
+        project = db.get(Project, project_id)
+        if not workflow or not project or workflow.status in ("Sent", "Sending", "Needs Review"):
+            return
+        previous_status = workflow.status
+        previous_balance = workflow.last_balance
+        billing_customer = await revio_billing_find_customer(project.customer)
+        balance = billing_customer["balance"]
+        workflow.revio_customer_id = billing_customer["customer_id"]
+        workflow.revio_customer_name = billing_customer["customer_name"]
+        workflow.last_balance = str(balance)
+        workflow.last_checked_at = datetime.utcnow()
+        workflow.last_error = None
+
+        if balance != Decimal("0"):
+            workflow.status = "Waiting for zero balance"
+            if previous_status != workflow.status or previous_balance != workflow.last_balance:
+                record_automation_activity(
+                    db, project.id, "hardware_order_waiting",
+                    f"Rev.io Billing verified {billing_customer['customer_name']}; "
+                    f"hardware order is waiting for the account balance to reach $0.00 "
+                    f"(current balance: $" f"{balance:,.2f})",
+                    old_value=previous_balance, new_value=workflow.last_balance,
+                )
+            db.commit()
+            return
+
+        project_snapshot = {
+            "customer": project.customer, "project_name": project.project_name,
+            "project_type": project.project_type, "sales_owner": project.sales_owner,
+        }
+        workflow.status = "Sending"
+        db.commit()
+        try:
+            await graph_send_hardware_order_email(project_snapshot, billing_customer)
+        except httpx.TimeoutException:
+            workflow.status = "Needs Review"
+            workflow.last_error = "The email request timed out. Delivery is uncertain, so automatic retries are paused."
+            record_automation_activity(
+                db, project.id, "hardware_order_review",
+                "Rev.io Billing balance is $0.00, but the Sales email timed out. "
+                "Automatic retry is paused to prevent a duplicate email.",
+            )
+            db.commit()
+            logger.exception("Hardware order email timed out for project %s", project_id)
+            return
+
+        workflow.status = "Sent"
+        workflow.email_sent_at = datetime.utcnow()
+        record_automation_activity(
+            db, project.id, "hardware_order_sent",
+            f"Rev.io Billing verified a $0.00 balance and notified "
+            f"{os.getenv('HARDWARE_ORDER_EMAIL', 'sales@bullfrog.net')} to order hardware",
+            old_value=previous_status, new_value="Sent",
+        )
+        db.commit()
+    except Exception as exc:
+        logger.exception("Hardware order workflow failed for project %s", project_id)
+        db.rollback()
+        workflow = db.scalar(select(HardwareOrderWorkflow).where(HardwareOrderWorkflow.project_id == project_id))
+        project = db.get(Project, project_id)
+        if workflow and project and workflow.status != "Sent":
+            old_error = workflow.last_error
+            workflow.status = "Retry"
+            workflow.last_error = str(exc)[:2000]
+            workflow.last_checked_at = datetime.utcnow()
+            if old_error != workflow.last_error:
+                record_automation_activity(
+                    db, project.id, "hardware_order_retry",
+                    f"Hardware order check could not complete: {workflow.last_error}. It will retry automatically.",
+                )
+            db.commit()
+    finally:
+        db.close()
+
+async def hardware_order_maintenance():
+    interval = max(300, int(os.getenv("HARDWARE_ORDER_CHECK_SECONDS", "3600")))
+    while True:
+        await asyncio.sleep(interval)
+        db = SessionLocal()
+        try:
+            project_ids = list(db.scalars(
+                select(HardwareOrderWorkflow.project_id).where(
+                    HardwareOrderWorkflow.status.in_(("Pending", "Waiting for zero balance", "Retry"))
+                )
+            ).all())
+        finally:
+            db.close()
+        for project_id in project_ids:
+            await process_hardware_order_workflow(project_id)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     ensure_database_schema()
     seed_database()
     graph_task = asyncio.create_task(graph_subscription_maintenance())
+    hardware_task = asyncio.create_task(hardware_order_maintenance())
     try:
         yield
     finally:
         graph_task.cancel()
+        hardware_task.cancel()
 
 app = FastAPI(title="Bullfrog Project Command Center", version="1.5.0", lifespan=lifespan)
 def webex_oauth_configured() -> bool:
@@ -721,7 +934,10 @@ def add_milestone(project_id: int, payload: MilestoneCreate, request: Request, d
     return item
 
 @app.patch("/api/milestones/{milestone_id}", response_model=MilestoneOut)
-def update_milestone(milestone_id: int, payload: MilestoneUpdate, request: Request, db: Session = Depends(get_db)):
+def update_milestone(
+    milestone_id: int, payload: MilestoneUpdate, request: Request,
+    background_tasks: BackgroundTasks, db: Session = Depends(get_db),
+):
     item = db.get(Milestone, milestone_id)
     if not item:
         raise HTTPException(404, "Milestone not found")
@@ -756,7 +972,29 @@ def update_milestone(milestone_id: int, payload: MilestoneUpdate, request: Reque
                 f"Advanced Next Action to {next_action}", field_name="next_action",
                 old_value=old_action, new_value=next_action,
             )
+    should_check_hardware_order = (
+        old_status != "Complete"
+        and item.status == "Complete"
+        and item.name.strip().casefold() == "quote signed"
+    )
+    if should_check_hardware_order:
+        workflow = db.scalar(
+            select(HardwareOrderWorkflow).where(HardwareOrderWorkflow.project_id == item.project_id)
+        )
+        if not workflow:
+            workflow = HardwareOrderWorkflow(project_id=item.project_id, status="Pending")
+            db.add(workflow)
+        elif workflow.status != "Sent":
+            workflow.status = "Pending"
+            workflow.last_error = None
+        if workflow.status != "Sent":
+            record_automation_activity(
+                db, item.project_id, "hardware_order_queued",
+                "Quote Signed is complete; queued the Rev.io Billing balance check",
+            )
     db.commit(); db.refresh(item)
+    if should_check_hardware_order and workflow.status != "Sent":
+        background_tasks.add_task(process_hardware_order_workflow, item.project_id)
     return item
 
 @app.delete("/api/milestones/{milestone_id}", status_code=204)
