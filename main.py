@@ -47,6 +47,9 @@ PSA_TICKET_TYPE_ID = 3
 PSA_NEW_STATUS_ID = 1
 PSA_COMPLETE_STATUS_ID = 4
 PSA_PRIORITY_ID = 2
+
+def psa_ticket_automation_enabled() -> bool:
+    return os.getenv("REVIO_PSA_TICKET_AUTOMATION_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_ATTACHMENTS_PER_NOTE = 5
 ALLOWED_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt"}
@@ -1349,13 +1352,14 @@ async def process_hardware_order_workflow(project_id: int):
             old_value=previous_status, new_value="Sent",
         )
         hardware_ticket = None
-        try:
-            hardware_ticket = queue_psa_ticket(db, project, "hardware_ordered")
-        except RuntimeError as exc:
-            record_psa_activity(
-                db, project.id, "psa_ticket_review",
-                f"Hardware email was sent, but the Rev PSA hardware ticket could not be queued: {exc}",
-            )
+        if psa_ticket_automation_enabled():
+            try:
+                hardware_ticket = queue_psa_ticket(db, project, "hardware_ordered")
+            except RuntimeError as exc:
+                record_psa_activity(
+                    db, project.id, "psa_ticket_review",
+                    f"Hardware email was sent, but the Rev PSA hardware ticket could not be queued: {exc}",
+                )
         db.commit()
         if hardware_ticket and hardware_ticket.status in ("Pending", "Retry"):
             await process_psa_ticket_workflow(hardware_ticket.id)
@@ -1402,13 +1406,14 @@ async def lifespan(app: FastAPI):
     ensure_project_workflow_milestones()
     graph_task = asyncio.create_task(graph_subscription_maintenance())
     hardware_task = asyncio.create_task(hardware_order_maintenance())
-    psa_ticket_task = asyncio.create_task(psa_ticket_maintenance())
+    psa_ticket_task = asyncio.create_task(psa_ticket_maintenance()) if psa_ticket_automation_enabled() else None
     try:
         yield
     finally:
         graph_task.cancel()
         hardware_task.cancel()
-        psa_ticket_task.cancel()
+        if psa_ticket_task:
+            psa_ticket_task.cancel()
 
 app = FastAPI(title="Bullfrog Project Command Center", version="1.5.0", lifespan=lifespan)
 def webex_oauth_configured() -> bool:
@@ -1861,7 +1866,7 @@ def update_milestone(
                 "Hardware Paid is complete; queued the Rev.io Billing balance check",
             )
 
-    if old_status != "Complete" and item.status == "Complete":
+    if psa_ticket_automation_enabled() and old_status != "Complete" and item.status == "Complete":
         workflow_key = MILESTONE_TICKET_RULES.get(normalized_milestone)
         if workflow_key:
             project = db.get(Project, item.project_id)
