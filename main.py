@@ -19,7 +19,7 @@ from sqlalchemy import inspect, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from database import Base, SessionLocal, engine, get_db
-from models import CustomerContact, HardwareOrderWorkflow, IntakeEmail, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote
+from models import CustomerContact, HardwareOrderWorkflow, IntakeEmail, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote, PsaTicketWorkflow
 from schemas import (
     ContactCreate, ContactOut, ContactUpdate, IntakeConvert, IntakeEmailCreate, IntakeEmailOut,
     MilestoneCreate, MilestoneOut, MilestoneUpdate, NoteOut, ProjectCreate, ProjectOut, ProjectUpdate,
@@ -34,6 +34,19 @@ ENGINEERS = ["Gabriel", "Zach", "Michael"]
 SALES_OWNERS = ["Jack", "Matt"]
 CUSTOMER_SUCCESS_MANAGERS = ["Chad", "Ryan"]
 NEXT_ACTION_OWNERS = ENGINEERS + SALES_OWNERS + CUSTOMER_SUCCESS_MANAGERS
+PSA_USERS = {
+    "Chad": "01KKF7PVMWVPZR94AEQS16Y006",
+    "Michael": "01KKF7TPZ18APSA2PF4JNX7PAS",
+    "Gabriel": "01KKXX54ZETXXFPXSHNR06HA94",
+    "Zach": "01KKVPJEXD1PW9D0X1VF8S8598",
+    "Ryan": "01KKXT22MVQRM5R0TZV8X1922E",
+    "Jack": "01KKF79JYR6K8B333BPSKCBNEP",
+    "Matt": "01KPXEWW7F6CVFGFMC11QTSS3D",
+}
+PSA_TICKET_TYPE_ID = 3
+PSA_NEW_STATUS_ID = 1
+PSA_COMPLETE_STATUS_ID = 4
+PSA_PRIORITY_ID = 2
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_ATTACHMENTS_PER_NOTE = 5
 ALLOWED_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt"}
@@ -43,16 +56,33 @@ GRAPH_API = "https://graph.microsoft.com/v1.0"
 logger = logging.getLogger("bullfrog.graph")
 
 TEMPLATES = {
-    "Webex Calling": ["Quote Signed", "Discovery Complete", "Network Review Complete", "Control Hub Provisioned",
-        "Users and Licenses Configured", "Number Port Submitted", "FOC Received",
-        "Devices Configured", "Call Flows Tested", "Customer Training", "Go Live", "Closeout"],
-    "Webex Contact Center": ["Quote Signed", "Discovery Complete", "Call Flow Design", "Queue and Team Design",
-        "Agent Setup", "Integrations", "Flow Build", "Testing", "Supervisor Training", "Go Live", "Closeout"],
-    "Meraki": ["Quote Signed", "Discovery Complete", "Network Design", "Hardware Received", "Configuration",
-        "Staging", "Installation", "Validation", "Documentation", "Closeout"],
-    "Network": ["Quote Signed", "Discovery Complete", "Network Design", "Hardware Received", "Configuration",
-        "Installation", "Validation", "Documentation", "Closeout"],
-    "Other": ["Quote Signed", "Discovery Complete", "Planning", "Implementation", "Testing", "Customer Acceptance", "Closeout"],
+    "Webex Calling": [
+        "Signed Proposal", "Internal Handoff", "Kickoff Call", "Call Flow", "User Spreadsheet",
+        "LOA Document", "Port Submitted", "FOC Received", "Port Complete", "Hardware Ordered",
+        "Hardware Delivered", "Devices Registered", "Users Added", "Go Live Follow Up", "Go Live", "Closeout",
+    ],
+    "Webex Contact Center": [
+        "Signed Proposal", "Internal Handoff", "Kickoff Call", "Call Flow", "User Spreadsheet",
+        "Users Added", "Agent Setup", "Integrations", "Flow Build", "Testing", "Supervisor Training",
+        "Go Live Follow Up", "Go Live", "Closeout",
+    ],
+    "Meraki": ["Signed Proposal", "Internal Handoff", "Kickoff Call", "Hardware Ordered", "Hardware Delivered",
+        "Devices Registered", "Network Design", "Configuration", "Staging", "Installation", "Validation",
+        "Documentation", "Go Live Follow Up", "Closeout"],
+    "Network": ["Signed Proposal", "Internal Handoff", "Kickoff Call", "Hardware Ordered", "Hardware Delivered",
+        "Devices Registered", "Network Design", "Configuration", "Installation", "Validation",
+        "Documentation", "Go Live Follow Up", "Closeout"],
+    "Other": ["Signed Proposal", "Internal Handoff", "Kickoff Call", "Planning", "Implementation",
+        "Testing", "Customer Acceptance", "Go Live Follow Up", "Closeout"],
+}
+
+WORKFLOW_MILESTONES = {
+    "Webex Calling": ["Signed Proposal", "Kickoff Call", "LOA Document", "FOC Received", "Port Complete",
+                      "Hardware Ordered", "Hardware Delivered", "User Spreadsheet"],
+    "Webex Contact Center": ["Signed Proposal", "Kickoff Call", "User Spreadsheet"],
+    "Meraki": ["Signed Proposal", "Kickoff Call", "Hardware Ordered", "Hardware Delivered"],
+    "Network": ["Signed Proposal", "Kickoff Call", "Hardware Ordered", "Hardware Delivered"],
+    "Other": ["Signed Proposal", "Kickoff Call"],
 }
 
 def project_query():
