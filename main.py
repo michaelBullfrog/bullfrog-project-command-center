@@ -438,6 +438,7 @@ async def graph_send_hardware_order_email(project: dict, billing_customer: dict)
     project_name = html.escape(project["project_name"])
     project_type = html.escape(project["project_type"])
     sales_owner = html.escape(project.get("sales_owner") or "Not assigned")
+    scope = html.escape(project.get("scope") or "No scope or signed-work description was provided.")
     billing_id = html.escape(billing_customer["customer_id"])
     project_link = f'<p><a href="{html.escape(app_url)}">Open Bullfrog Projects</a></p>' if app_url else ""
     body = f"""
@@ -449,6 +450,8 @@ async def graph_send_hardware_order_email(project: dict, billing_customer: dict)
           <tr><td><strong>Sales Owner</strong></td><td>{sales_owner}</td></tr>
           <tr><td><strong>Verified Balance</strong></td><td>$0.00</td></tr>
         </table>
+        <h3>Signed Work / Project Description</h3>
+        <p style="white-space: pre-wrap;">{scope}</p>
         <p><strong>Please order the hardware for this customer.</strong></p>
         {project_link}
     """
@@ -502,6 +505,7 @@ async def process_hardware_order_workflow(project_id: int):
         project_snapshot = {
             "customer": project.customer, "project_name": project.project_name,
             "project_type": project.project_type, "sales_owner": project.sales_owner,
+            "scope": project.scope,
         }
         workflow.status = "Sending"
         db.commit()
