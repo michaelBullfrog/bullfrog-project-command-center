@@ -71,9 +71,9 @@ The integration verifies the user through `/v1/people/me` and then discards the 
 
 Note attachments support PNG, JPG, PDF, Word, Excel, and TXT files. Each file is limited to 10 MB, with up to five files per note. Attachments are stored in PostgreSQL and require Webex SSO.
 
-## Quote Signed hardware-order automation
+## Hardware Paid order automation
 
-New project templates include a **Quote Signed** milestone. When it is marked complete, the app:
+New project templates separate **Signed Proposal** from **Hardware Paid**. Signed Proposal creates the internal-handoff PSA ticket. When Hardware Paid is marked complete, the app:
 
 1. searches Rev.io Billing for an exact normalized customer-name match;
 2. reads the customer's account-wide `finance.balance` (including unbilled transactions);
