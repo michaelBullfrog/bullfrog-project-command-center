@@ -1097,8 +1097,11 @@ def ensure_project_workflow_milestones():
                 select(Milestone).where(Milestone.project_id == project.id).order_by(Milestone.id)
             ).all())
             for item in existing_items:
-                if normalize_customer_name(item.name) == "quotesigned":
+                normalized_name = normalize_customer_name(item.name)
+                if normalized_name == "quotesigned":
                     item.name = "Signed Proposal"
+                elif normalized_name == "hardwarepaid":
+                    item.name = "Hardware Payment Check"
             existing_names = {normalize_customer_name(item.name) for item in existing_items}
             for name in WORKFLOW_MILESTONES.get(project.project_type, []):
                 if normalize_customer_name(name) not in existing_names:
