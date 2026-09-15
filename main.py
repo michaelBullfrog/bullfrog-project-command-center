@@ -1303,7 +1303,17 @@ async def process_hardware_order_workflow(project_id: int):
             f"{os.getenv('HARDWARE_ORDER_EMAIL', 'sales@bullfrog.net')} to order hardware",
             old_value=previous_status, new_value="Sent",
         )
+        hardware_ticket = None
+        try:
+            hardware_ticket = queue_psa_ticket(db, project, "hardware_ordered")
+        except RuntimeError as exc:
+            record_psa_activity(
+                db, project.id, "psa_ticket_review",
+                f"Hardware email was sent, but the Rev PSA hardware ticket could not be queued: {exc}",
+            )
         db.commit()
+        if hardware_ticket and hardware_ticket.status in ("Pending", "Retry"):
+            await process_psa_ticket_workflow(hardware_ticket.id)
     except Exception as exc:
         logger.exception("Hardware order workflow failed for project %s", project_id)
         db.rollback()
