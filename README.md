@@ -82,16 +82,17 @@ New project templates include a **Quote Signed** milestone. When it is marked co
 
 The workflow is persisted in PostgreSQL and will not send a second email if the milestone is toggled or the app restarts. Its checks and outcomes are written to Project Activity History.
 
-Configure these Render environment variables:
+Configure this Render secret:
 
-- `REVIO_BILLING_USERNAME`
-- `REVIO_BILLING_CLIENT_CODE`
-- `REVIO_BILLING_PASSWORD`
+- `REVIO_BILLING_AUTHORIZATION`: the complete `Basic …` authorization value from Rev.io Billing
+
+The app also supports `REVIO_BILLING_USERNAME`, `REVIO_BILLING_CLIENT_CODE`, and `REVIO_BILLING_PASSWORD` as an optional fallback.
+
 - Optional `REVIO_BILLING_BASE_URL` (defaults to `https://restapi.rev.io`)
 - Optional `HARDWARE_ORDER_EMAIL` (defaults to `sales@bullfrog.net`)
 - Optional `HARDWARE_ORDER_CHECK_SECONDS` (defaults to 3600; minimum 300)
 
-These are separate from the Rev.io PSA API settings. Rev.io Billing authenticates as `username@clientcode:password`.
+These settings are separate from the Rev.io PSA API. Store the authorization value only as a secret environment variable; never commit it to GitHub.
 
 The Microsoft Entra application used by `MS_INTAKE_MAILBOX` must also have the Microsoft Graph **Mail.Send application permission** with admin consent. The existing Exchange application access policy should keep send-as access limited to the approved mailbox.
 
