@@ -71,6 +71,30 @@ The integration verifies the user through `/v1/people/me` and then discards the 
 
 Note attachments support PNG, JPG, PDF, Word, Excel, and TXT files. Each file is limited to 10 MB, with up to five files per note. Attachments are stored in PostgreSQL and require Webex SSO.
 
+## Quote Signed hardware-order automation
+
+New project templates include a **Quote Signed** milestone. When it is marked complete, the app:
+
+1. searches Rev.io Billing for an exact normalized customer-name match;
+2. reads the customer's account-wide `finance.balance` (including unbilled transactions);
+3. waits and rechecks hourly while the balance is not zero; and
+4. sends one hardware-order email to `sales@bullfrog.net` after a confirmed $0.00 balance.
+
+The workflow is persisted in PostgreSQL and will not send a second email if the milestone is toggled or the app restarts. Its checks and outcomes are written to Project Activity History.
+
+Configure these Render environment variables:
+
+- `REVIO_BILLING_USERNAME`
+- `REVIO_BILLING_CLIENT_CODE`
+- `REVIO_BILLING_PASSWORD`
+- Optional `REVIO_BILLING_BASE_URL` (defaults to `https://restapi.rev.io`)
+- Optional `HARDWARE_ORDER_EMAIL` (defaults to `sales@bullfrog.net`)
+- Optional `HARDWARE_ORDER_CHECK_SECONDS` (defaults to 3600; minimum 300)
+
+These are separate from the Rev.io PSA API settings. Rev.io Billing authenticates as `username@clientcode:password`.
+
+The Microsoft Entra application used by `MS_INTAKE_MAILBOX` must also have the Microsoft Graph **Mail.Send application permission** with admin consent. The existing Exchange application access policy should keep send-as access limited to the approved mailbox.
+
 ## API
 
 Interactive API documentation is available at `/docs`. Health check: `/api/health`.
