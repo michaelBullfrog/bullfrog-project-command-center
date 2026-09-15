@@ -404,16 +404,58 @@ async def revio_billing_get(path: str, params: dict | None = None) -> dict:
         raise RuntimeError("Rev.io Billing returned an unexpected response")
     return payload
 
-async def revio_billing_complete_statuses() -> dict[str, str]:
+async def revio_billing_request_statuses() -> dict[str, dict]:
+    # Include inactive statuses too. Older signed quotes can retain a status
+    # that an administrator later deactivated in Rev.io.
     payload = await revio_billing_get(
         "/v1/RequestStatuses",
-        {"search.status_type": "COMPLETE", "search.active": "true", "search.page_size": 100},
+        {"search.page_size": 100},
     )
+    statuses = {}
+    for item in revio_records(payload):
+        status_id = revio_value(item, "request_status_id", "requestStatusId", "status_id", "statusId", "id")
+        if status_id in (None, ""):
+            continue
+        statuses[str(status_id)] = {
+            "name": str(revio_value(item, "name", "request_status", "requestStatus") or "Unknown status"),
+            "type": str(revio_value(item, "status_type", "statusType", "type") or "").upper(),
+        }
+    return statuses
+
+def revio_billing_quote_status(item: dict, statuses: dict[str, dict]) -> tuple[str, dict]:
+    nested = item.get("status") if isinstance(item.get("status"), dict) else {}
+    status_id = revio_value(
+        item, "request_status_id", "requestStatusId", "status_id", "statusId"
+    )
+    if status_id in (None, ""):
+        status_id = revio_value(nested, "request_status_id", "requestStatusId", "status_id", "statusId", "id")
+    status = statuses.get(str(status_id), {}).copy()
+    direct_name = revio_value(item, "request_status", "requestStatus", "status_name", "statusName")
+    if not direct_name:
+        direct_name = revio_value(nested, "name", "request_status", "requestStatus")
+    direct_type = revio_value(item, "status_type", "statusType")
+    if not direct_type:
+        direct_type = revio_value(nested, "status_type", "statusType", "type")
+    if direct_name:
+        status["name"] = str(direct_name)
+    if direct_type:
+        status["type"] = str(direct_type).upper()
+    status.setdefault("name", "Unknown status")
+    status.setdefault("type", "")
+    return str(status_id or ""), status
+
+def revio_billing_status_is_signed(status: dict) -> bool:
+    if status.get("type") == "COMPLETE":
+        return True
+    name = normalize_customer_name(status.get("name"))
+    return any(word in name for word in ("signed", "complete", "accepted", "approved", "converted", "won"))
+
+async def revio_billing_complete_statuses() -> dict[str, str]:
+    statuses = await revio_billing_request_statuses()
     return {
-        str(item.get("request_status_id")): str(item.get("name") or "Complete")
-        for item in payload.get("records", [])
-        if isinstance(item, dict) and item.get("request_status_id") is not None
-        and str(item.get("status_type") or "").upper() == "COMPLETE"
+        status_id: status["name"]
+        for status_id, status in statuses.items()
+        if revio_billing_status_is_signed(status)
     }
 
 async def revio_billing_find_customer(customer_name: str) -> dict:
@@ -446,55 +488,58 @@ async def revio_billing_find_customer(customer_name: str) -> dict:
     return {"customer_id": str(customer_id), "customer_name": revio_billing_customer_name(customer), "balance": balance}
 
 async def revio_billing_signed_quotes(customer_id: str) -> list[dict]:
-    complete_statuses = await revio_billing_complete_statuses()
-    if not complete_statuses:
-        raise RuntimeError("Rev.io Billing did not return any completed request statuses")
+    statuses = await revio_billing_request_statuses()
     payload = await revio_billing_get(
         "/v1/Requests",
         {"search.customer_id": customer_id, "search.page_size": 100, "search.sort": "-status_date"},
     )
     quotes = []
-    for item in payload.get("records", []):
-        if not isinstance(item, dict):
+    for item in revio_records(payload):
+        request_id = revio_value(item, "request_id", "requestId", "id")
+        if request_id in (None, ""):
             continue
-        status_id = str(item.get("request_status_id"))
-        if status_id not in complete_statuses:
-            continue
-        request_id = item.get("request_id")
-        if request_id is None:
+        _, request_status = revio_billing_quote_status(item, statuses)
+        # The Quote Signed milestone is the team's confirmation that the
+        # selected request was signed. Show every non-canceled request because
+        # Rev.io tenants often use custom request status names/types.
+        if request_status.get("type") == "CANCELED":
             continue
         quotes.append({
             "quote_id": str(request_id),
-            "description": str(item.get("description") or "No quote description"),
-            "status": complete_statuses[status_id],
-            "signed_at": item.get("status_date") or item.get("created_date"),
+            "description": str(revio_value(item, "description", "name", "title") or "No quote description"),
+            "status": request_status["name"],
+            "status_type": request_status["type"],
+            "is_signed_status": revio_billing_status_is_signed(request_status),
+            "signed_at": revio_value(item, "status_date", "statusDate", "modified_date", "modifiedDate", "created_date", "createdDate"),
         })
-    quotes.sort(key=lambda item: item.get("signed_at") or "", reverse=True)
+    quotes.sort(
+        key=lambda item: (item["is_signed_status"], item.get("signed_at") or ""),
+        reverse=True,
+    )
     return quotes
 
 async def revio_billing_selected_quote(customer_id: str, quote_id: str | None) -> dict:
     clean_quote_id = (quote_id or "").strip()
     if not clean_quote_id.isdigit():
         raise RuntimeError("Select a signed Rev.io Quote ID on the project before completing Quote Signed")
-    complete_statuses = await revio_billing_complete_statuses()
+    statuses = await revio_billing_request_statuses()
     payload = await revio_billing_get(
         "/v1/Requests",
         {"search.request_id": clean_quote_id, "search.page_size": 10},
     )
     matches = [
-        item for item in payload.get("records", [])
-        if isinstance(item, dict)
-        and str(item.get("request_id")) == clean_quote_id
-        and str(item.get("customer_id")) == str(customer_id)
+        item for item in revio_records(payload)
+        if str(revio_value(item, "request_id", "requestId", "id")) == clean_quote_id
+        and str(revio_value(item, "customer_id", "customerId")) == str(customer_id)
     ]
     if len(matches) != 1:
         raise RuntimeError(
             f"Rev.io Quote {clean_quote_id} was not found for the matched Billing customer"
         )
     request_item = matches[0]
-    status_id = str(request_item.get("request_status_id"))
-    if status_id not in complete_statuses:
-        raise RuntimeError(f"Rev.io Quote {clean_quote_id} is not in a completed/signed status")
+    _, request_status = revio_billing_quote_status(request_item, statuses)
+    if request_status.get("type") == "CANCELED":
+        raise RuntimeError(f"Rev.io Quote {clean_quote_id} is canceled")
     products_payload = await revio_billing_get(
         "/v1/RequestProducts",
         {"search.request_id": clean_quote_id, "search.page_size": 100},
