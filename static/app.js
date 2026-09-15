@@ -84,10 +84,13 @@ async function loadSignedQuotes(customerName,selectedId=""){
  try{
   const result=await api("/api/revio/billing/quotes?customer_name="+encodeURIComponent(customerName));
   select.replaceChildren(new Option("Select a signed quote…",""));
-  result.quotes.forEach(q=>{const when=q.signed_at?" · "+fmtDate(q.signed_at):"";select.add(new Option("#"+q.quote_id+" — "+q.description+when,q.quote_id))});
+  result.quotes.forEach(q=>{const when=q.signed_at?" · "+fmtDate(q.signed_at):"";const status=q.status?" ["+q.status+"]":"";select.add(new Option("#"+q.quote_id+" — "+q.description+status+when,q.quote_id))});
   if(selectedId&&!result.quotes.some(q=>String(q.quote_id)===String(selectedId)))select.add(new Option("#"+selectedId+" — Previously selected",selectedId));
   select.value=selectedId||"";select.disabled=!result.quotes.length;
-  statusEl.textContent=result.quotes.length?"✓ "+result.quotes.length+" signed quote"+(result.quotes.length===1?"":"s")+" found":"No completed/signed quotes found in Rev.io Billing.";
+  const signedCount=result.quotes.filter(q=>q.is_signed_status).length;
+  statusEl.textContent=result.quotes.length
+   ? "✓ "+result.quotes.length+" quote"+(result.quotes.length===1?"":"s")+" found"+(signedCount?" · "+signedCount+" in a signed/completed status":" · verify the status before selecting")
+   : "No quotes found for this Rev.io Billing customer.";
   statusEl.className="lookup-status "+(result.quotes.length?"success":"error");
  }catch(e){
   select.replaceChildren(new Option(selectedId?"Previously selected quote #"+selectedId:"Unable to load signed quotes",selectedId||""));select.disabled=true;statusEl.textContent=e.message;statusEl.className="lookup-status error";
