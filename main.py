@@ -64,7 +64,7 @@ def project_query():
     )
 
 FIELD_LABELS = {
-    "customer": "Customer", "customer_id": "Rev PSA Customer ID", "project_name": "Project name", "project_type": "Project type",
+    "customer": "Customer", "customer_id": "Rev PSA Customer ID", "quote_id": "Rev.io Quote ID", "project_name": "Project name", "project_type": "Project type",
     "technical_manager": "Customer Success Manager", "engineer": "Assigned Engineer",
     "sales_owner": "Sales Owner", "stage": "Stage", "risk": "Risk", "priority": "Priority",
     "target_date": "Target go-live", "next_action": "Next action",
@@ -288,6 +288,9 @@ def ensure_database_schema():
     if "customer_id" not in columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE projects ADD COLUMN customer_id VARCHAR(50)"))
+    if "quote_id" not in columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE projects ADD COLUMN quote_id VARCHAR(50)"))
 
 def revio_configured() -> bool:
     return bool(os.getenv("REVIO_API_KEY", "").strip())
@@ -371,9 +374,7 @@ def revio_billing_customer_name(customer: dict) -> str:
             return f"{first} {last}".strip()
     return ""
 
-async def revio_billing_find_customer(customer_name: str) -> dict:
-    if not revio_billing_configured():
-        raise RuntimeError("Rev.io Billing is not configured")
+def revio_billing_http_settings() -> tuple[str, dict, httpx.BasicAuth | None]:
     base_url = os.getenv("REVIO_BILLING_BASE_URL", "https://restapi.rev.io").rstrip("/")
     authorization = (os.getenv("REVIO_BILLING_AUTHORIZATION") or "").strip()
     headers = {"Accept": "application/json"}
@@ -387,15 +388,40 @@ async def revio_billing_find_customer(customer_name: str) -> dict:
         client_code = os.environ["REVIO_BILLING_CLIENT_CODE"].strip()
         password = os.environ["REVIO_BILLING_PASSWORD"]
         auth = httpx.BasicAuth(f"{username}@{client_code}", password)
+    return base_url, headers, auth
+
+async def revio_billing_get(path: str, params: dict | None = None) -> dict:
+    if not revio_billing_configured():
+        raise RuntimeError("Rev.io Billing is not configured")
+    base_url, headers, auth = revio_billing_http_settings()
     async with httpx.AsyncClient(timeout=30.0, auth=auth) as client:
         response = await client.get(
-            f"{base_url}/v1/Customers",
-            params={"search.name": customer_name, "search.page_size": 25},
-            headers=headers,
+            f"{base_url}/{path.lstrip('/')}", params=params or {}, headers=headers,
         )
         response.raise_for_status()
     payload = response.json()
-    records = payload.get("records", []) if isinstance(payload, dict) else []
+    if not isinstance(payload, dict):
+        raise RuntimeError("Rev.io Billing returned an unexpected response")
+    return payload
+
+async def revio_billing_complete_statuses() -> dict[str, str]:
+    payload = await revio_billing_get(
+        "/v1/RequestStatuses",
+        {"search.status_type": "COMPLETE", "search.active": "true", "search.page_size": 100},
+    )
+    return {
+        str(item.get("request_status_id")): str(item.get("name") or "Complete")
+        for item in payload.get("records", [])
+        if isinstance(item, dict) and item.get("request_status_id") is not None
+        and str(item.get("status_type") or "").upper() == "COMPLETE"
+    }
+
+async def revio_billing_find_customer(customer_name: str) -> dict:
+    payload = await revio_billing_get(
+        "/v1/Customers",
+        {"search.name": customer_name, "search.page_size": 25},
+    )
+    records = payload.get("records", [])
     exact = [
         item for item in records
         if isinstance(item, dict)
@@ -419,6 +445,77 @@ async def revio_billing_find_customer(customer_name: str) -> dict:
         raise RuntimeError("Rev.io Billing returned an invalid account balance") from exc
     return {"customer_id": str(customer_id), "customer_name": revio_billing_customer_name(customer), "balance": balance}
 
+async def revio_billing_signed_quotes(customer_id: str) -> list[dict]:
+    complete_statuses = await revio_billing_complete_statuses()
+    if not complete_statuses:
+        raise RuntimeError("Rev.io Billing did not return any completed request statuses")
+    payload = await revio_billing_get(
+        "/v1/Requests",
+        {"search.customer_id": customer_id, "search.page_size": 100, "search.sort": "-status_date"},
+    )
+    quotes = []
+    for item in payload.get("records", []):
+        if not isinstance(item, dict):
+            continue
+        status_id = str(item.get("request_status_id"))
+        if status_id not in complete_statuses:
+            continue
+        request_id = item.get("request_id")
+        if request_id is None:
+            continue
+        quotes.append({
+            "quote_id": str(request_id),
+            "description": str(item.get("description") or "No quote description"),
+            "status": complete_statuses[status_id],
+            "signed_at": item.get("status_date") or item.get("created_date"),
+        })
+    quotes.sort(key=lambda item: item.get("signed_at") or "", reverse=True)
+    return quotes
+
+async def revio_billing_selected_quote(customer_id: str, quote_id: str | None) -> dict:
+    clean_quote_id = (quote_id or "").strip()
+    if not clean_quote_id.isdigit():
+        raise RuntimeError("Select a signed Rev.io Quote ID on the project before completing Quote Signed")
+    complete_statuses = await revio_billing_complete_statuses()
+    payload = await revio_billing_get(
+        "/v1/Requests",
+        {"search.request_id": clean_quote_id, "search.page_size": 10},
+    )
+    matches = [
+        item for item in payload.get("records", [])
+        if isinstance(item, dict)
+        and str(item.get("request_id")) == clean_quote_id
+        and str(item.get("customer_id")) == str(customer_id)
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"Rev.io Quote {clean_quote_id} was not found for the matched Billing customer"
+        )
+    request_item = matches[0]
+    status_id = str(request_item.get("request_status_id"))
+    if status_id not in complete_statuses:
+        raise RuntimeError(f"Rev.io Quote {clean_quote_id} is not in a completed/signed status")
+    products_payload = await revio_billing_get(
+        "/v1/RequestProducts",
+        {"search.request_id": clean_quote_id, "search.page_size": 100},
+    )
+    products = [
+        {
+            "description": str(item.get("description") or f"Product {item.get('product_id', '')}").strip(),
+            "quantity": item.get("quantity"),
+            "rate": item.get("rate"),
+        }
+        for item in products_payload.get("records", [])
+        if isinstance(item, dict)
+    ]
+    return {
+        "quote_id": clean_quote_id,
+        "description": str(request_item.get("description") or "No quote description"),
+        "status": complete_statuses[status_id],
+        "signed_at": request_item.get("status_date") or request_item.get("created_date"),
+        "products": products,
+    }
+
 def record_automation_activity(db: Session, project_id: int, action: str, description: str, old_value=None, new_value=None):
     db.add(ProjectActivity(
         project_id=project_id, actor_name="Bullfrog Automation", actor_email=None,
@@ -428,7 +525,7 @@ def record_automation_activity(db: Session, project_id: int, action: str, descri
         description=description,
     ))
 
-async def graph_send_hardware_order_email(project: dict, billing_customer: dict):
+async def graph_send_hardware_order_email(project: dict, billing_customer: dict, signed_quote: dict):
     if not graph_configured():
         raise RuntimeError("Microsoft Graph is not configured")
     sender = quote(os.environ["MS_INTAKE_MAILBOX"], safe="")
@@ -438,8 +535,17 @@ async def graph_send_hardware_order_email(project: dict, billing_customer: dict)
     project_name = html.escape(project["project_name"])
     project_type = html.escape(project["project_type"])
     sales_owner = html.escape(project.get("sales_owner") or "Not assigned")
-    scope = html.escape(project.get("scope") or "No scope or signed-work description was provided.")
     billing_id = html.escape(billing_customer["customer_id"])
+    quote_id = html.escape(signed_quote["quote_id"])
+    quote_description = html.escape(signed_quote["description"])
+    product_rows = "".join(
+        "<tr><td>" + html.escape(str(product.get("quantity") or "")) + "</td><td>"
+        + html.escape(product.get("description") or "") + "</td><td>"
+        + html.escape(str(product.get("rate") if product.get("rate") is not None else "")) + "</td></tr>"
+        for product in signed_quote["products"]
+    )
+    if not product_rows:
+        product_rows = '<tr><td colspan="3">No product lines were returned for this quote.</td></tr>'
     project_link = f'<p><a href="{html.escape(app_url)}">Open Bullfrog Projects</a></p>' if app_url else ""
     body = f"""
         <p>The signed quote for <strong>{customer}</strong> has cleared the Rev.io Billing balance check.</p>
@@ -448,10 +554,16 @@ async def graph_send_hardware_order_email(project: dict, billing_customer: dict)
           <tr><td><strong>Project</strong></td><td>{project_name}</td></tr>
           <tr><td><strong>Project Type</strong></td><td>{project_type}</td></tr>
           <tr><td><strong>Sales Owner</strong></td><td>{sales_owner}</td></tr>
+          <tr><td><strong>Rev.io Quote ID</strong></td><td>{quote_id}</td></tr>
           <tr><td><strong>Verified Balance</strong></td><td>$0.00</td></tr>
         </table>
-        <h3>Signed Work / Project Description</h3>
-        <p style="white-space: pre-wrap;">{scope}</p>
+        <h3>Signed Quote Description</h3>
+        <p style="white-space: pre-wrap;">{quote_description}</p>
+        <h3>Quoted Products</h3>
+        <table>
+          <thead><tr><th>Quantity</th><th>Description</th><th>Rate</th></tr></thead>
+          <tbody>{product_rows}</tbody>
+        </table>
         <p><strong>Please order the hardware for this customer.</strong></p>
         {project_link}
     """
@@ -482,6 +594,7 @@ async def process_hardware_order_workflow(project_id: int):
         previous_status = workflow.status
         previous_balance = workflow.last_balance
         billing_customer = await revio_billing_find_customer(project.customer)
+        signed_quote = await revio_billing_selected_quote(billing_customer["customer_id"], project.quote_id)
         balance = billing_customer["balance"]
         workflow.revio_customer_id = billing_customer["customer_id"]
         workflow.revio_customer_name = billing_customer["customer_name"]
@@ -505,12 +618,11 @@ async def process_hardware_order_workflow(project_id: int):
         project_snapshot = {
             "customer": project.customer, "project_name": project.project_name,
             "project_type": project.project_type, "sales_owner": project.sales_owner,
-            "scope": project.scope,
         }
         workflow.status = "Sending"
         db.commit()
         try:
-            await graph_send_hardware_order_email(project_snapshot, billing_customer)
+            await graph_send_hardware_order_email(project_snapshot, billing_customer, signed_quote)
         except httpx.TimeoutException:
             workflow.status = "Needs Review"
             workflow.last_error = "The email request timed out. Delivery is uncertain, so automatic retries are paused."
@@ -527,7 +639,7 @@ async def process_hardware_order_workflow(project_id: int):
         workflow.email_sent_at = datetime.utcnow()
         record_automation_activity(
             db, project.id, "hardware_order_sent",
-            f"Rev.io Billing verified a $0.00 balance and notified "
+            f"Rev.io Billing verified Quote {signed_quote['quote_id']} and a $0.00 balance, then notified "
             f"{os.getenv('HARDWARE_ORDER_EMAIL', 'sales@bullfrog.net')} to order hardware",
             old_value=previous_status, new_value="Sent",
         )
@@ -866,6 +978,27 @@ async def lookup_revio_customer(customer_id: str):
     if not customer:
         raise HTTPException(404, f"No Rev PSA customer was found for ID {clean_id}")
     return {"customer_id": customer["customer_id"], "customer_name": customer["customer_name"]}
+
+@app.get("/api/revio/billing/quotes")
+async def list_revio_billing_quotes(customer_name: str = Query(..., min_length=1)):
+    try:
+        customer = await revio_billing_find_customer(customer_name.strip())
+        quotes = await revio_billing_signed_quotes(customer["customer_id"])
+        return {
+            "billing_customer_id": customer["customer_id"],
+            "billing_customer_name": customer["customer_name"],
+            "quotes": quotes,
+        }
+    except httpx.HTTPStatusError as exc:
+        detail = f"Rev.io Billing quote lookup failed with status {exc.response.status_code}"
+        try:
+            payload = exc.response.json()
+            detail = payload.get("message") or payload.get("error") or detail
+        except ValueError:
+            pass
+        raise HTTPException(502, detail)
+    except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
+        raise HTTPException(502, str(exc))
 
 @app.get("/api/options")
 def options():
