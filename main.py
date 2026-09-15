@@ -499,12 +499,11 @@ async def revio_billing_signed_quotes(customer_id: str) -> list[dict]:
         if request_id in (None, ""):
             continue
         _, request_status = revio_billing_quote_status(item, statuses)
-        # The Quote Signed milestone is the team's confirmation that the
-        # selected request was signed. Show every non-canceled request because
-        # Rev.io tenants often use custom request status names/types.
         if request_status.get("type") == "CANCELED":
             continue
         quotes.append({
+            "source_id": f"request:{request_id}",
+            "source_type": "Quote",
             "quote_id": str(request_id),
             "description": str(revio_value(item, "description", "name", "title") or "No quote description"),
             "status": request_status["name"],
@@ -518,48 +517,230 @@ async def revio_billing_signed_quotes(customer_id: str) -> list[dict]:
     )
     return quotes
 
-async def revio_billing_selected_quote(customer_id: str, quote_id: str | None) -> dict:
-    clean_quote_id = (quote_id or "").strip()
-    if not clean_quote_id.isdigit():
-        raise RuntimeError("Select a signed Rev.io Quote ID on the project before completing Quote Signed")
-    statuses = await revio_billing_request_statuses()
+async def revio_billing_product_names(product_ids: set[str]) -> dict[str, str]:
+    if not product_ids:
+        return {}
     payload = await revio_billing_get(
-        "/v1/Requests",
-        {"search.request_id": clean_quote_id, "search.page_size": 10},
+        "/v1/Products",
+        {"search.product_id": sorted(product_ids), "search.page_size": 100},
     )
-    matches = [
-        item for item in revio_records(payload)
-        if str(revio_value(item, "request_id", "requestId", "id")) == clean_quote_id
-        and str(revio_value(item, "customer_id", "customerId")) == str(customer_id)
-    ]
-    if len(matches) != 1:
-        raise RuntimeError(
-            f"Rev.io Quote {clean_quote_id} was not found for the matched Billing customer"
-        )
-    request_item = matches[0]
-    _, request_status = revio_billing_quote_status(request_item, statuses)
-    if request_status.get("type") == "CANCELED":
-        raise RuntimeError(f"Rev.io Quote {clean_quote_id} is canceled")
-    products_payload = await revio_billing_get(
-        "/v1/RequestProducts",
-        {"search.request_id": clean_quote_id, "search.page_size": 100},
-    )
-    products = [
-        {
-            "description": str(item.get("description") or f"Product {item.get('product_id', '')}").strip(),
-            "quantity": item.get("quantity"),
-            "rate": item.get("rate"),
-        }
-        for item in products_payload.get("records", [])
-        if isinstance(item, dict)
-    ]
-    return {
-        "quote_id": clean_quote_id,
-        "description": str(request_item.get("description") or "No quote description"),
-        "status": complete_statuses[status_id],
-        "signed_at": request_item.get("status_date") or request_item.get("created_date"),
-        "products": products,
+    names = {}
+    for item in revio_records(payload):
+        product_id = revio_value(item, "product_id", "productId", "id")
+        name = revio_value(item, "description", "name", "product_name", "productName")
+        if product_id not in (None, "") and name:
+            names[str(product_id)] = str(name)
+    return names
+
+async def revio_billing_charge_lines(charges: list[dict]) -> list[dict]:
+    product_ids = {
+        str(product_id)
+        for item in charges
+        if (product_id := revio_value(item, "product_id", "productId")) not in (None, "")
     }
+    try:
+        product_names = await revio_billing_product_names(product_ids)
+    except httpx.HTTPStatusError:
+        # Product lookup is only enrichment; charge descriptions may already
+        # contain everything needed for the hardware order email.
+        product_names = {}
+    lines = []
+    for item in charges:
+        product = item.get("product") if isinstance(item.get("product"), dict) else {}
+        product_id = revio_value(item, "product_id", "productId")
+        description = (
+            revio_value(item, "description", "name", "charge_description", "chargeDescription")
+            or revio_value(product, "description", "name", "product_name", "productName")
+            or product_names.get(str(product_id))
+            or (f"Product {product_id}" if product_id not in (None, "") else "Rev.io charge")
+        )
+        lines.append({
+            "description": str(description).strip(),
+            "quantity": revio_value(item, "quantity", "qty") or 1,
+            "rate": revio_value(item, "rate", "unit_rate", "unitRate", "price", "amount"),
+        })
+    return lines
+
+async def revio_billing_bill_sources(customer_id: str) -> list[dict]:
+    bills_payload, charges_payload = await asyncio.gather(
+        revio_billing_get(
+            "/v1/Bills",
+            {"search.customer_id": customer_id, "search.page_size": 100, "search.sort": "-created_date"},
+        ),
+        revio_billing_get(
+            "/v1/Charges",
+            {"search.customer_id": customer_id, "search.page_size": 100, "search.sort": "-created_date"},
+        ),
+    )
+    bills = revio_records(bills_payload)
+    charges = revio_records(charges_payload)
+    charges_by_bill: dict[str, list[dict]] = {}
+    unbilled_charges = []
+    for charge in charges:
+        bill_id = revio_value(charge, "bill_id", "billId")
+        if bill_id in (None, "", 0, "0"):
+            unbilled_charges.append(charge)
+        else:
+            charges_by_bill.setdefault(str(bill_id), []).append(charge)
+
+    sources = []
+    for bill in bills:
+        bill_id = revio_value(bill, "bill_id", "billId", "id")
+        if bill_id in (None, ""):
+            continue
+        bill_charges = charges_by_bill.get(str(bill_id), [])
+        bill_number = revio_value(bill, "bill_number", "billNumber", "invoice_number", "invoiceNumber")
+        created = revio_value(bill, "cycle_date", "cycleDate", "created_date", "createdDate", "due_date", "dueDate")
+        amount = revio_value(bill, "amount_due", "amountDue", "balance", "total", "amount")
+        label = f"Bill #{bill_number or bill_id}"
+        detail = f"{len(bill_charges)} charge{'s' if len(bill_charges) != 1 else ''}"
+        if amount not in (None, ""):
+            detail += f" · Total {amount}"
+        sources.append({
+            "source_id": f"bill:{bill_id}",
+            "source_type": "Bill",
+            "quote_id": str(bill_id),
+            "description": f"{label} — {detail}",
+            "status": "Billed",
+            "status_type": "BILL",
+            "is_signed_status": True,
+            "signed_at": created,
+        })
+
+    if unbilled_charges:
+        newest = max(
+            (str(revio_value(item, "created_date", "createdDate") or "") for item in unbilled_charges),
+            default="",
+        )
+        sources.append({
+            "source_id": "charges:unbilled",
+            "source_type": "Charges",
+            "quote_id": "unbilled",
+            "description": f"Current unbilled charges — {len(unbilled_charges)} item{'s' if len(unbilled_charges) != 1 else ''}",
+            "status": "Unbilled",
+            "status_type": "CHARGES",
+            "is_signed_status": True,
+            "signed_at": newest or None,
+        })
+    return sources
+
+async def revio_billing_sources(customer_id: str) -> list[dict]:
+    quotes, billing_sources = await asyncio.gather(
+        revio_billing_signed_quotes(customer_id),
+        revio_billing_bill_sources(customer_id),
+    )
+    return quotes + billing_sources
+
+async def revio_billing_selected_source(customer_id: str, selected_id: str | None) -> dict:
+    clean_id = (selected_id or "").strip()
+    if not clean_id:
+        raise RuntimeError("Select a Rev.io Quote, Bill, or Charges entry before completing Quote Signed")
+    if ":" in clean_id:
+        source_type, source_value = clean_id.split(":", 1)
+    elif clean_id.isdigit():
+        source_type, source_value = "request", clean_id
+    else:
+        raise RuntimeError("The selected Rev.io billing source is invalid")
+
+    if source_type == "request":
+        if not source_value.isdigit():
+            raise RuntimeError("The selected Rev.io Quote ID is invalid")
+        statuses = await revio_billing_request_statuses()
+        payload = await revio_billing_get(
+            "/v1/Requests",
+            {"search.request_id": source_value, "search.page_size": 10},
+        )
+        matches = [
+            item for item in revio_records(payload)
+            if str(revio_value(item, "request_id", "requestId", "id")) == source_value
+            and str(revio_value(item, "customer_id", "customerId")) == str(customer_id)
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(f"Rev.io Quote {source_value} was not found for the matched Billing customer")
+        request_item = matches[0]
+        _, request_status = revio_billing_quote_status(request_item, statuses)
+        if request_status.get("type") == "CANCELED":
+            raise RuntimeError(f"Rev.io Quote {source_value} is canceled")
+        products_payload = await revio_billing_get(
+            "/v1/RequestProducts",
+            {"search.request_id": source_value, "search.page_size": 100},
+        )
+        products = [
+            {
+                "description": str(revio_value(item, "description", "name") or f"Product {revio_value(item, 'product_id', 'productId') or ''}").strip(),
+                "quantity": revio_value(item, "quantity", "qty"),
+                "rate": revio_value(item, "rate", "price", "amount"),
+            }
+            for item in revio_records(products_payload)
+        ]
+        return {
+            "source_id": f"request:{source_value}",
+            "source_type": "Quote",
+            "source_number": source_value,
+            "quote_id": source_value,
+            "description": str(revio_value(request_item, "description", "name", "title") or "No quote description"),
+            "status": request_status["name"],
+            "signed_at": revio_value(request_item, "status_date", "statusDate", "created_date", "createdDate"),
+            "products": products,
+        }
+
+    if source_type == "bill":
+        if not source_value.isdigit():
+            raise RuntimeError("The selected Rev.io Bill ID is invalid")
+        bill_payload, charges_payload = await asyncio.gather(
+            revio_billing_get("/v1/Bills", {"search.bill_id": source_value, "search.page_size": 10}),
+            revio_billing_get("/v1/Charges", {"search.bill_id": source_value, "search.page_size": 100}),
+        )
+        matches = [
+            item for item in revio_records(bill_payload)
+            if str(revio_value(item, "bill_id", "billId", "id")) == source_value
+            and str(revio_value(item, "customer_id", "customerId")) == str(customer_id)
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(f"Rev.io Bill {source_value} was not found for the matched Billing customer")
+        bill = matches[0]
+        charges = [
+            item for item in revio_records(charges_payload)
+            if str(revio_value(item, "customer_id", "customerId") or customer_id) == str(customer_id)
+        ]
+        bill_number = revio_value(bill, "bill_number", "billNumber", "invoice_number", "invoiceNumber") or source_value
+        return {
+            "source_id": f"bill:{source_value}",
+            "source_type": "Bill",
+            "source_number": str(bill_number),
+            "quote_id": source_value,
+            "description": f"Rev.io Bill #{bill_number}",
+            "status": "Billed",
+            "signed_at": revio_value(bill, "cycle_date", "cycleDate", "created_date", "createdDate", "due_date", "dueDate"),
+            "products": await revio_billing_charge_lines(charges),
+        }
+
+    if source_type == "charges" and source_value == "unbilled":
+        payload = await revio_billing_get(
+            "/v1/Charges",
+            {"search.customer_id": customer_id, "search.page_size": 100, "search.sort": "-created_date"},
+        )
+        charges = [
+            item for item in revio_records(payload)
+            if revio_value(item, "bill_id", "billId") in (None, "", 0, "0")
+        ]
+        if not charges:
+            raise RuntimeError("No current unbilled Rev.io charges were found for this customer")
+        return {
+            "source_id": "charges:unbilled",
+            "source_type": "Charges",
+            "source_number": "Unbilled",
+            "quote_id": "unbilled",
+            "description": "Current unbilled Rev.io charges",
+            "status": "Unbilled",
+            "signed_at": max(
+                (str(revio_value(item, "created_date", "createdDate") or "") for item in charges),
+                default="",
+            ) or None,
+            "products": await revio_billing_charge_lines(charges),
+        }
+
+    raise RuntimeError("The selected Rev.io billing source is not supported")
 
 def record_automation_activity(db: Session, project_id: int, action: str, description: str, old_value=None, new_value=None):
     db.add(ProjectActivity(
@@ -639,7 +820,7 @@ async def process_hardware_order_workflow(project_id: int):
         previous_status = workflow.status
         previous_balance = workflow.last_balance
         billing_customer = await revio_billing_find_customer(project.customer)
-        signed_quote = await revio_billing_selected_quote(billing_customer["customer_id"], project.quote_id)
+        signed_quote = await revio_billing_selected_source(billing_customer["customer_id"], project.quote_id)
         balance = billing_customer["balance"]
         workflow.revio_customer_id = billing_customer["customer_id"]
         workflow.revio_customer_name = billing_customer["customer_name"]
@@ -1028,11 +1209,12 @@ async def lookup_revio_customer(customer_id: str):
 async def list_revio_billing_quotes(customer_name: str = Query(..., min_length=1)):
     try:
         customer = await revio_billing_find_customer(customer_name.strip())
-        quotes = await revio_billing_signed_quotes(customer["customer_id"])
+        sources = await revio_billing_sources(customer["customer_id"])
         return {
             "billing_customer_id": customer["customer_id"],
             "billing_customer_name": customer["customer_name"],
-            "quotes": quotes,
+            "quotes": sources,
+            "sources": sources,
         }
     except httpx.HTTPStatusError as exc:
         detail = f"Rev.io Billing quote lookup failed with status {exc.response.status_code}"
