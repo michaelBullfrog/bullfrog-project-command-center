@@ -379,6 +379,222 @@ async def revio_lookup_customer(customer_id: str) -> dict | None:
         return {"customer_id": str(resolved_id), "customer_name": str(name), "revio_record": customer}
 
 
+
+async def revio_psa_access_token(client: httpx.AsyncClient) -> str:
+    base_url = os.getenv("REVIO_BASE_URL", "https://api.psarev.io").rstrip("/")
+    exchange_path = os.getenv("REVIO_TOKEN_EXCHANGE_PATH", "/api/v1/auth/api-key/exchange")
+    response = await client.post(
+        f"{base_url}/{exchange_path.lstrip('/')}",
+        json={"apiKey": os.getenv("REVIO_API_KEY", "").strip()},
+        headers={"Accept": "application/json"},
+    )
+    response.raise_for_status()
+    token = ((response.json().get("data") or {}).get("token"))
+    if not token:
+        raise RuntimeError("Rev PSA did not return an access token")
+    return token
+
+async def revio_psa_api_request(method: str, path: str, *, json_body: dict | None = None, params: dict | None = None):
+    if not revio_configured():
+        raise RuntimeError("Rev PSA is not configured")
+    base_url = os.getenv("REVIO_BASE_URL", "https://api.psarev.io").rstrip("/")
+    host = os.getenv("REVIO_HOST", "bullfrog.psarev.io").strip()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        token = await revio_psa_access_token(client)
+        response = await client.request(
+            method,
+            f"{base_url}/{path.lstrip('/')}",
+            headers={"Authorization": f"Bearer {token}", "X-Revio-Host": host, "Accept": "application/json"},
+            json=json_body,
+            params=params,
+        )
+        response.raise_for_status()
+        if not response.content:
+            return {}
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"data": payload}
+
+def psa_ticket_ids() -> tuple[int, int, int, int]:
+    return (
+        int(os.getenv("REVIO_PSA_TICKET_TYPE_ID", str(PSA_TICKET_TYPE_ID))),
+        int(os.getenv("REVIO_PSA_NEW_STATUS_ID", str(PSA_NEW_STATUS_ID))),
+        int(os.getenv("REVIO_PSA_COMPLETE_STATUS_ID", str(PSA_COMPLETE_STATUS_ID))),
+        int(os.getenv("REVIO_PSA_PRIORITY_ID", str(PSA_PRIORITY_ID))),
+    )
+
+PSA_TICKET_RULES = {
+    "schedule_internal_handoff": {
+        "description": "Schedule Internal Handoff", "assignee": "sales_owner",
+        "associate": "csm", "completed_milestone": "Internal Handoff", "next": "kickoff_call",
+        "work": "Coordinate and schedule the internal project handoff with Sales and Customer Success.",
+    },
+    "kickoff_call": {
+        "description": "Schedule and Hold Kickoff Call", "assignee": "csm",
+        "completed_milestone": "Kickoff Call", "next": "call_flow",
+        "work": "Schedule and hold the customer kickoff meeting. Complete this ticket after the meeting is held.",
+    },
+    "call_flow": {
+        "description": "Build Customer Call Flow", "assignee": "engineer",
+        "completed_milestone": "Call Flow",
+        "work": "Document and configure the customer call flow based on the completed kickoff meeting.",
+    },
+    "submit_port": {
+        "description": "Submit Number Port", "assignee": "engineer",
+        "completed_milestone": "Port Submitted",
+        "work": "Submit the number port using the completed LOA documentation.",
+    },
+    "notify_port_date": {
+        "description": "Notify Customer of Port Date", "assignee": "csm",
+        "work": "Notify the customer of the confirmed FOC and port date.",
+    },
+    "schedule_go_live_follow_up": {
+        "description": "Schedule Go-Live Follow-Up", "assignee": "csm",
+        "completed_milestone": "Go Live Follow Up",
+        "work": "Schedule the customer go-live follow-up after the number port is complete.",
+    },
+    "hardware_ordered": {
+        "description": "Order Customer Hardware", "assignee": "sales_owner",
+        "completed_milestone": "Hardware Ordered", "next": "provide_tracking",
+        "work": "Order the hardware listed in the approved Rev.io billing source. Complete this ticket when ordered.",
+    },
+    "provide_tracking": {
+        "description": "Provide Hardware Tracking to Customer", "assignee": "csm",
+        "work": "Send the hardware shipment tracking information to the customer.",
+    },
+    "register_devices": {
+        "description": "Register Customer Devices", "assignee": "engineer",
+        "completed_milestone": "Devices Registered",
+        "work": "Register the delivered customer devices in Rev PSA and the applicable provisioning platform.",
+    },
+    "add_users": {
+        "description": "Add Customer Users", "assignee": "engineer",
+        "completed_milestone": "Users Added",
+        "work": "Add and configure the users from the completed customer spreadsheet.",
+    },
+}
+
+MILESTONE_TICKET_RULES = {
+    "signedproposal": "schedule_internal_handoff",
+    "quotesigned": "schedule_internal_handoff",
+    "kickoffcall": "call_flow",
+    "loadocument": "submit_port",
+    "focreceived": "notify_port_date",
+    "foc": "notify_port_date",
+    "portcomplete": "schedule_go_live_follow_up",
+    "hardwareordered": "provide_tracking",
+    "hardwaredelivered": "register_devices",
+    "hardwaredelivery": "register_devices",
+    "userspreadsheet": "add_users",
+}
+
+def psa_assignee(project: Project, role: str) -> str:
+    if role == "sales_owner":
+        name = project.sales_owner
+    elif role == "csm":
+        name = project.technical_manager
+    else:
+        name = project.engineer
+    if not name:
+        raise RuntimeError(f"Project has no {role.replace('_', ' ')} assigned")
+    if name not in PSA_USERS:
+        raise RuntimeError(f"{name} does not have a configured Rev PSA Global User ID")
+    return name
+
+def record_psa_activity(db: Session, project_id: int, action: str, description: str):
+    db.add(ProjectActivity(
+        project_id=project_id, actor_name="Bullfrog Automation", actor_email=None,
+        action=action, field_name="revio_psa_ticket_workflow", description=description,
+    ))
+
+def queue_psa_ticket(db: Session, project: Project, workflow_key: str) -> PsaTicketWorkflow:
+    existing = db.scalar(select(PsaTicketWorkflow).where(
+        PsaTicketWorkflow.project_id == project.id,
+        PsaTicketWorkflow.workflow_key == workflow_key,
+    ))
+    if existing:
+        return existing
+    rule = PSA_TICKET_RULES[workflow_key]
+    assignee = psa_assignee(project, rule["assignee"])
+    associated = psa_assignee(project, rule["associate"]) if rule.get("associate") else None
+    workflow = PsaTicketWorkflow(
+        project_id=project.id,
+        workflow_key=workflow_key,
+        ticket_description=rule["description"],
+        assignee_name=assignee,
+        associated_name=associated,
+        status="Pending",
+    )
+    db.add(workflow)
+    db.flush()
+    record_psa_activity(
+        db, project.id, "psa_ticket_queued",
+        f"Queued Rev PSA ticket: {rule['description']} — assigned to {assignee}",
+    )
+    return workflow
+
+async def revio_psa_create_ticket(project: Project, workflow: PsaTicketWorkflow) -> str:
+    ticket_type_id, new_status_id, _, priority_id = psa_ticket_ids()
+    rule = PSA_TICKET_RULES[workflow.workflow_key]
+    if not (project.customer_id or "").isdigit():
+        raise RuntimeError("Project must have a numeric Rev PSA Customer ID before creating tickets")
+    associated_names = [workflow.assignee_name]
+    if workflow.associated_name and workflow.associated_name not in associated_names:
+        associated_names.append(workflow.associated_name)
+    payload = {
+        "customerId": int(project.customer_id),
+        "ticketDescription": f"{project.customer} — {workflow.ticket_description}",
+        "ticketTypeId": ticket_type_id,
+        "ticketStatusId": new_status_id,
+        "ticketPriorityId": priority_id,
+        "techAssigned": workflow.assignee_name,
+        "techsAssociated": [
+            {
+                "globalUserId": PSA_USERS[name],
+                "techName": "Matthew" if name == "Matt" else name,
+                "workComplete": False,
+                "role": "Assigned" if name == workflow.assignee_name else "Associated",
+            }
+            for name in associated_names
+        ],
+        "workRequested": (
+            f"{rule['work']}\n\n"
+            f"Bullfrog Project: {project.project_name}\n"
+            f"Customer: {project.customer}\n"
+            f"Project Type: {project.project_type}"
+        ),
+    }
+    path = os.getenv("REVIO_PSA_TICKET_CREATE_PATH", "/psac/api/v1/ticket")
+    response = await revio_psa_api_request("POST", path, json_body=payload)
+    data = response.get("data", response)
+    if isinstance(data, dict):
+        ticket_id = revio_value(data, "ticketId", "ticket_id", "id")
+    else:
+        ticket_id = None
+    if ticket_id in (None, ""):
+        ticket_id = revio_value(response, "ticketId", "ticket_id", "id")
+    if ticket_id in (None, ""):
+        raise RuntimeError("Rev PSA created the ticket but did not return a ticket ID")
+    return str(ticket_id)
+
+async def revio_psa_ticket_status(ticket_id: str) -> int:
+    path_template = os.getenv("REVIO_PSA_TICKET_DETAIL_PATH", "/psac/api/v1/ticket/{ticket_id}")
+    response = await revio_psa_api_request(
+        "GET", path_template.format(ticket_id=quote(ticket_id, safe=""))
+    )
+    data = response.get("data", response)
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Rev PSA returned an unexpected response for ticket {ticket_id}")
+    status_id = revio_value(data, "ticketStatusId", "ticket_status_id", "statusId", "status_id")
+    nested = data.get("status") if isinstance(data.get("status"), dict) else {}
+    if status_id in (None, ""):
+        status_id = revio_value(nested, "ticketStatusId", "ticket_status_id", "statusId", "status_id", "id")
+    if status_id in (None, ""):
+        raise RuntimeError(f"Rev PSA ticket {ticket_id} did not include a status ID")
+    return int(status_id)
+
+
 def normalize_customer_name(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", (value or "").casefold())
 
