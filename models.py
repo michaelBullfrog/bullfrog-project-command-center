@@ -126,6 +126,24 @@ class HardwareOrderWorkflow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
+class PsaTicketWorkflow(Base):
+    __tablename__ = "psa_ticket_workflows"
+    __table_args__ = (UniqueConstraint("project_id", "workflow_key", name="uq_psa_ticket_workflow_step"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    workflow_key: Mapped[str] = mapped_column(String(80))
+    ticket_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    ticket_description: Mapped[str] = mapped_column(String(300))
+    assignee_name: Mapped[str] = mapped_column(String(100))
+    associated_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="Pending", index=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
 class IntakeEmail(Base):
     __tablename__ = "intake_emails"
     __table_args__ = (UniqueConstraint("message_id", name="uq_intake_email_message_id"),)
