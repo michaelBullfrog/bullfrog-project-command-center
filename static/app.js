@@ -77,25 +77,32 @@ function bindRows(){$$("[data-id]").forEach(el=>el.onclick=()=>openDetail(Number
 async function loadIntake(){try{state.intake=await api("/api/intake");state.intakeError=null}catch(e){console.error("Project intake:",e);state.intake=[];state.intakeError=e.message}renderIntake()}
 function setView(name){state.view=name;$$(".view").forEach(v=>v.classList.add("hidden"));const target=$("#"+name+"-view");if(!target){toast("This view is not available. Please refresh the page.");return}target.classList.remove("hidden");$$(".nav-link").forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",intake:"Project Intake",team:"Team View"}[name];if(name==="intake")loadIntake()}
 function resetQuoteOptions(selectedId=""){
- const select=$("#quote-id-select"),statusEl=$("#quote-lookup-status");select.replaceChildren(new Option(selectedId?"Previously selected quote #"+selectedId:"Search the customer to load signed quotes",selectedId||""));select.disabled=true;statusEl.textContent="";statusEl.className="lookup-status";
+ const select=$("#quote-id-select"),statusEl=$("#quote-lookup-status");select.replaceChildren(new Option(selectedId?"Previously selected Rev.io source "+selectedId:"Search the customer to load quotes, bills, and charges",selectedId||""));select.disabled=true;statusEl.textContent="";statusEl.className="lookup-status";
 }
 async function loadSignedQuotes(customerName,selectedId=""){
- const select=$("#quote-id-select"),statusEl=$("#quote-lookup-status");select.disabled=true;select.replaceChildren(new Option("Loading signed quotes…",""));statusEl.textContent="";
+ const select=$("#quote-id-select"),statusEl=$("#quote-lookup-status");select.disabled=true;select.replaceChildren(new Option("Loading Rev.io billing activity…",""));statusEl.textContent="";
  try{
   const result=await api("/api/revio/billing/quotes?customer_name="+encodeURIComponent(customerName));
-  select.replaceChildren(new Option("Select a signed quote…",""));
-  result.quotes.forEach(q=>{const when=q.signed_at?" · "+fmtDate(q.signed_at):"";const status=q.status?" ["+q.status+"]":"";select.add(new Option("#"+q.quote_id+" — "+q.description+status+when,q.quote_id))});
-  if(selectedId&&!result.quotes.some(q=>String(q.quote_id)===String(selectedId)))select.add(new Option("#"+selectedId+" — Previously selected",selectedId));
-  select.value=selectedId||"";select.disabled=!result.quotes.length;
-  const signedCount=result.quotes.filter(q=>q.is_signed_status).length;
-  statusEl.textContent=result.quotes.length
-   ? "✓ "+result.quotes.length+" quote"+(result.quotes.length===1?"":"s")+" found"+(signedCount?" · "+signedCount+" in a signed/completed status":" · verify the status before selecting")
-   : "No quotes found for this Rev.io Billing customer.";
-  statusEl.className="lookup-status "+(result.quotes.length?"success":"error");
+  const sources=result.sources||result.quotes||[];
+  select.replaceChildren(new Option("Select a quote, bill, or charge group…",""));
+  sources.forEach(q=>{
+   const when=q.signed_at?" · "+fmtDate(q.signed_at):"";
+   const status=q.status?" ["+q.status+"]":"";
+   const type=q.source_type||"Quote";
+   const value=q.source_id||q.quote_id;
+   select.add(new Option(type+" — "+q.description+status+when,value));
+  });
+  if(selectedId&&!sources.some(q=>String(q.source_id||q.quote_id)===String(selectedId)))select.add(new Option("Previously selected — "+selectedId,selectedId));
+  select.value=selectedId||"";select.disabled=!sources.length;
+  const counts=sources.reduce((a,q)=>{const type=(q.source_type||"Quote").toLowerCase();a[type]=(a[type]||0)+1;return a},{});
+  const summary=Object.entries(counts).map(([type,count])=>count+" "+type+(count===1?"":"s")).join(", ");
+  statusEl.textContent=sources.length?"✓ Found "+summary:"No quotes, bills, or charges found for this Rev.io Billing customer.";
+  statusEl.className="lookup-status "+(sources.length?"success":"error");
  }catch(e){
-  select.replaceChildren(new Option(selectedId?"Previously selected quote #"+selectedId:"Unable to load signed quotes",selectedId||""));select.disabled=true;statusEl.textContent=e.message;statusEl.className="lookup-status error";
+  select.replaceChildren(new Option(selectedId?"Previously selected — "+selectedId:"Unable to load Rev.io billing activity",selectedId||""));select.disabled=true;statusEl.textContent=e.message;statusEl.className="lookup-status error";
  }
 }
+
 function openForm(project=null,intakeId=null){
  const f=$("#project-form");f.reset();$("#customer-lookup-status").textContent="";$("#customer-lookup-status").className="lookup-status";resetQuoteOptions(project?.quote_id||"");$("#project-id").value=project?.id||"";$("#intake-id").value=intakeId||"";$("#form-title").textContent=intakeId?"Review Project Intake":project?"Edit Project":"New Project";
  f.elements.technical_manager.value=project?.technical_manager||"Chad";
@@ -111,7 +118,7 @@ async function openDetail(id,initialTab="milestones"){
  const activities=p.activities.length?p.activities.map(a=>'<div class="activity-item"><span class="activity-dot '+safe(a.action)+'"></span><div><strong>'+safe(a.description)+'</strong><div class="small">'+safe(a.actor_name)+' · '+new Date(a.created_at).toLocaleString()+'</div></div></div>').join(""):'<div class="empty">Activity will appear as the project is updated.</div>';
  $("#project-detail").innerHTML=
  '<div class="detail-hero"><div><p class="eyebrow">'+safe(p.project_type)+'</p><h2>'+safe(p.customer)+' — '+safe(p.project_name)+'</h2><div>'+badge(p.risk)+' <span class="badge stage">'+safe(p.stage)+'</span></div></div><div class="detail-actions"><button class="secondary" id="edit-project">Edit</button><button class="secondary danger" id="delete-project">Delete</button></div></div>'+
- '<div class="detail-meta"><div class="meta-box"><span>Rev Customer ID</span><strong>'+safe(p.customer_id||"Not linked")+'</strong></div><div class="meta-box"><span>Rev Quote ID</span><strong>'+safe(p.quote_id||"Not selected")+'</strong></div><div class="meta-box"><span>Go-Live</span><strong>'+fmtDate(p.target_date)+'</strong></div><div class="meta-box"><span>Engineer</span><strong>'+safe(p.engineer||"Unassigned")+'</strong></div><div class="meta-box"><span>Customer Success</span><strong>'+safe(p.technical_manager)+'</strong></div><div class="meta-box"><span>Priority</span><strong>'+safe(p.priority)+'</strong></div></div>'+
+ '<div class="detail-meta"><div class="meta-box"><span>Rev Customer ID</span><strong>'+safe(p.customer_id||"Not linked")+'</strong></div><div class="meta-box"><span>Rev Billing Source</span><strong>'+safe(p.quote_id||"Not selected")+'</strong></div><div class="meta-box"><span>Go-Live</span><strong>'+fmtDate(p.target_date)+'</strong></div><div class="meta-box"><span>Engineer</span><strong>'+safe(p.engineer||"Unassigned")+'</strong></div><div class="meta-box"><span>Customer Success</span><strong>'+safe(p.technical_manager)+'</strong></div><div class="meta-box"><span>Priority</span><strong>'+safe(p.priority)+'</strong></div></div>'+
  '<div class="next-box"><p class="eyebrow">NEXT ACTION</p><strong>'+safe(p.next_action||"No next action entered")+'</strong><div class="small">Owner: '+safe(p.next_action_owner||"Unassigned")+' · Due: '+fmtDate(p.next_action_due)+'</div>'+(p.blocked?'<div class="overdue"><strong>Blocked:</strong> '+safe(p.blocker||"Reason not entered")+'</div>':"")+'</div>'+
  '<div class="section-box scope-box"><h3>Project Scope</h3><div class="scope">'+safe(p.scope||"No scope entered.")+'</div></div>'+
  '<div class="detail-tabs"><button data-detail-tab="milestones">Milestones <span>'+done+'/'+total+'</span></button><button data-detail-tab="notes">Notes & Attachments <span>'+p.notes.length+'</span></button><button data-detail-tab="contacts">Customer Contacts <span>'+p.contacts.length+'</span></button><button data-detail-tab="activity">Activity History <span>'+p.activities.length+'</span></button></div>'+
