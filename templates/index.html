@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Bullfrog Project Command Center</title>
-  <link rel="stylesheet" href="/static/styles.css?v=1.5.1">
+  <link rel="stylesheet" href="/static/styles.css?v=1.6.0">
 </head>
 <body>
   <aside class="sidebar">
@@ -74,6 +74,10 @@
             <span class="lookup-status" id="customer-lookup-status"></span>
           </label>
           <label>Customer*<input name="customer" required></label>
+          <label>Rev.io Signed Quote
+            <select name="quote_id" id="quote-id-select" disabled><option value="">Search the customer to load signed quotes</option></select>
+            <span class="lookup-status" id="quote-lookup-status"></span>
+          </label>
           <label>Project name*<input name="project_name" required></label>
           <label>Project type<select name="project_type"></select></label>
           <label>Target go-live<input name="target_date" type="date"></label>
@@ -99,6 +103,6 @@
     <div class="modal-card detail-card"><button class="modal-close" data-close="detail-modal">×</button><div id="project-detail"></div></div>
   </div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=1.5.1"></script>
+  <script src="/static/app.js?v=1.6.0"></script>
 </body>
 </html>
