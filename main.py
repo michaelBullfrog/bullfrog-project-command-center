@@ -1783,11 +1783,13 @@ def update_milestone(
                 f"Advanced Next Action to {next_action}", field_name="next_action",
                 old_value=old_action, new_value=next_action,
             )
+    normalized_milestone = normalize_customer_name(item.name)
     should_check_hardware_order = (
         old_status != "Complete"
         and item.status == "Complete"
-        and item.name.strip().casefold() == "quote signed"
+        and normalized_milestone in ("quotesigned", "signedproposal")
     )
+    psa_workflow_id = None
     if should_check_hardware_order:
         workflow = db.scalar(
             select(HardwareOrderWorkflow).where(HardwareOrderWorkflow.project_id == item.project_id)
@@ -1801,11 +1803,28 @@ def update_milestone(
         if workflow.status != "Sent":
             record_automation_activity(
                 db, item.project_id, "hardware_order_queued",
-                "Quote Signed is complete; queued the Rev.io Billing balance check",
+                "Signed Proposal is complete; queued the Rev.io Billing balance check",
             )
+
+    if old_status != "Complete" and item.status == "Complete":
+        workflow_key = MILESTONE_TICKET_RULES.get(normalized_milestone)
+        if workflow_key:
+            project = db.get(Project, item.project_id)
+            try:
+                psa_workflow = queue_psa_ticket(db, project, workflow_key)
+                if psa_workflow.status in ("Pending", "Retry"):
+                    psa_workflow_id = psa_workflow.id
+            except RuntimeError as exc:
+                record_psa_activity(
+                    db, item.project_id, "psa_ticket_review",
+                    f"Could not queue Rev PSA ticket for {item.name}: {exc}",
+                )
+
     db.commit(); db.refresh(item)
     if should_check_hardware_order and workflow.status != "Sent":
         background_tasks.add_task(process_hardware_order_workflow, item.project_id)
+    if psa_workflow_id:
+        background_tasks.add_task(process_psa_ticket_workflow, psa_workflow_id)
     return item
 
 @app.delete("/api/milestones/{milestone_id}", status_code=204)
