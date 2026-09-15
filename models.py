@@ -109,6 +109,22 @@ class ProjectActivity(Base):
     project: Mapped[Project] = relationship(back_populates="activities")
 
 
+class HardwareOrderWorkflow(Base):
+    __tablename__ = "hardware_order_workflows"
+    __table_args__ = (UniqueConstraint("project_id", name="uq_hardware_order_workflow_project"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="Pending", index=True)
+    revio_customer_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    revio_customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_balance: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    email_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
 class IntakeEmail(Base):
     __tablename__ = "intake_emails"
     __table_args__ = (UniqueConstraint("message_id", name="uq_intake_email_message_id"),)
