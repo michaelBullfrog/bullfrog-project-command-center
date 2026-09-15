@@ -578,21 +578,53 @@ async def revio_psa_create_ticket(project: Project, workflow: PsaTicketWorkflow)
 
 async def revio_psa_ticket_status(ticket_id: str) -> int:
     path_template = os.getenv("REVIO_PSA_TICKET_DETAIL_PATH", "/psac/api/v1/ticket/{ticket_id}")
-    response = await revio_psa_api_request(
-        "GET", path_template.format(ticket_id=quote(ticket_id, safe=""))
-    )
-    data = response.get("data", response)
-    if isinstance(data, list):
-        data = data[0] if data else {}
-    if not isinstance(data, dict):
-        raise RuntimeError(f"Rev PSA returned an unexpected response for ticket {ticket_id}")
+    try:
+        response = await revio_psa_api_request(
+            "GET", path_template.format(ticket_id=quote(ticket_id, safe=""))
+        )
+        data = response.get("data", response)
+        if isinstance(data, list):
+            data = data[0] if data else {}
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code not in (404, 405):
+            raise
+        # Some PSA tenants expose ticket creation but not the matching detail
+        # route. Fall back to the known ticket-list endpoint and find the ID.
+        data = {}
+        list_path = os.getenv("REVIO_PSA_TICKET_LIST_PATH", "/psac/api/v1/ticket-list")
+        for page in range(1, 11):
+            payload = await revio_psa_api_request(
+                "GET", list_path, params={"page": page, "perPage": 100}
+            )
+            records = revio_records(payload)
+            match = next((
+                item for item in records
+                if str(revio_value(item, "ticketId", "ticket_id", "id")) == str(ticket_id)
+            ), None)
+            if match:
+                data = match
+                break
+            if len(records) < 100:
+                break
+
+    if not isinstance(data, dict) or not data:
+        raise RuntimeError(f"Rev PSA ticket {ticket_id} was not found")
     status_id = revio_value(data, "ticketStatusId", "ticket_status_id", "statusId", "status_id")
     nested = data.get("status") if isinstance(data.get("status"), dict) else {}
     if status_id in (None, ""):
         status_id = revio_value(nested, "ticketStatusId", "ticket_status_id", "statusId", "status_id", "id")
-    if status_id in (None, ""):
-        raise RuntimeError(f"Rev PSA ticket {ticket_id} did not include a status ID")
-    return int(status_id)
+    if status_id not in (None, ""):
+        try:
+            return int(status_id)
+        except (TypeError, ValueError):
+            pass
+
+    status_name = revio_value(data, "ticketStatus", "ticket_status", "status", "statusName")
+    if isinstance(status_name, dict):
+        status_name = revio_value(status_name, "name", "statusName")
+    if normalize_customer_name(str(status_name or "")) in ("complete", "completed"):
+        return psa_ticket_ids()[2]
+    raise RuntimeError(f"Rev PSA ticket {ticket_id} did not include a recognizable status")
 
 
 def normalize_customer_name(value: str | None) -> str:
