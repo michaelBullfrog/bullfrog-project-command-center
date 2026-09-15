@@ -8,7 +8,7 @@ A lightweight internal project-management application for Bullfrog technical ope
 - Needs Attention and Upcoming Go-Lives queues
 - Searchable/filterable project list
 - New and edit project forms
-- Project detail view with scope, blockers, next action, milestones, notes, and persistent attachments
+- Project detail view with scope, next action, milestones, notes, and persistent attachments
 - Engineer workload view
 - Automatic milestone templates for Webex Calling, Webex Contact Center, Meraki, Network, and Other
 - FastAPI REST API
