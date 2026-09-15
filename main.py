@@ -1052,6 +1052,137 @@ def record_automation_activity(db: Session, project_id: int, action: str, descri
         description=description,
     ))
 
+
+def ensure_project_workflow_milestones():
+    db = SessionLocal()
+    try:
+        projects = list(db.scalars(select(Project).where(Project.stage != "Complete")).all())
+        for project in projects:
+            existing_items = list(db.scalars(
+                select(Milestone).where(Milestone.project_id == project.id).order_by(Milestone.id)
+            ).all())
+            for item in existing_items:
+                if normalize_customer_name(item.name) == "quotesigned":
+                    item.name = "Signed Proposal"
+            existing_names = {normalize_customer_name(item.name) for item in existing_items}
+            for name in WORKFLOW_MILESTONES.get(project.project_type, []):
+                if normalize_customer_name(name) not in existing_names:
+                    db.add(Milestone(project_id=project.id, name=name))
+                    existing_names.add(normalize_customer_name(name))
+        db.commit()
+    finally:
+        db.close()
+
+def complete_automation_milestone(db: Session, project: Project, milestone_name: str):
+    milestone = db.scalar(select(Milestone).where(
+        Milestone.project_id == project.id,
+        Milestone.name.ilike(milestone_name),
+    ))
+    if milestone and milestone.status != "Complete":
+        milestone.status = "Complete"
+        milestone.completed_date = date.today()
+        record_psa_activity(
+            db, project.id, "milestone_updated",
+            f"Completed milestone {milestone.name} from Rev PSA ticket completion",
+        )
+
+async def process_psa_ticket_workflow(workflow_id: int):
+    db = SessionLocal()
+    try:
+        workflow = db.get(PsaTicketWorkflow, workflow_id)
+        if not workflow or workflow.status in ("Completed", "Needs Review"):
+            return
+        project = db.get(Project, workflow.project_id)
+        if not project:
+            return
+
+        if not workflow.ticket_id:
+            workflow.status = "Creating"
+            workflow.last_error = None
+            db.commit()
+            try:
+                ticket_id = await revio_psa_create_ticket(project, workflow)
+            except httpx.TimeoutException:
+                workflow.status = "Needs Review"
+                workflow.last_error = "Ticket creation timed out; automatic retry paused to prevent a duplicate ticket."
+                record_psa_activity(
+                    db, project.id, "psa_ticket_review",
+                    f"Rev PSA ticket creation timed out for {workflow.ticket_description}; verify PSA before retrying.",
+                )
+                db.commit()
+                return
+            workflow.ticket_id = ticket_id
+            workflow.status = "Open"
+            workflow.last_checked_at = datetime.utcnow()
+            workflow.last_error = None
+            record_psa_activity(
+                db, project.id, "psa_ticket_created",
+                f"Created Rev PSA ticket {ticket_id}: {workflow.ticket_description} — assigned to {workflow.assignee_name}",
+            )
+            db.commit()
+            return
+
+        _, _, completed_status_id, _ = psa_ticket_ids()
+        current_status = await revio_psa_ticket_status(workflow.ticket_id)
+        workflow.last_checked_at = datetime.utcnow()
+        workflow.last_error = None
+        if current_status != completed_status_id:
+            workflow.status = "Open"
+            db.commit()
+            return
+
+        workflow.status = "Completed"
+        workflow.completed_at = datetime.utcnow()
+        rule = PSA_TICKET_RULES[workflow.workflow_key]
+        completed_milestone = rule.get("completed_milestone")
+        if completed_milestone:
+            complete_automation_milestone(db, project, completed_milestone)
+        record_psa_activity(
+            db, project.id, "psa_ticket_completed",
+            f"Rev PSA ticket {workflow.ticket_id} completed: {workflow.ticket_description}",
+        )
+        next_key = rule.get("next")
+        next_workflow = queue_psa_ticket(db, project, next_key) if next_key else None
+        db.commit()
+        if next_workflow and next_workflow.status in ("Pending", "Retry"):
+            await process_psa_ticket_workflow(next_workflow.id)
+    except Exception as exc:
+        logger.exception("Rev PSA ticket workflow failed for workflow %s", workflow_id)
+        db.rollback()
+        workflow = db.get(PsaTicketWorkflow, workflow_id)
+        if workflow and workflow.status not in ("Completed", "Needs Review"):
+            workflow.status = "Needs Review" if (
+                isinstance(exc, httpx.HTTPStatusError) and 400 <= exc.response.status_code < 500
+            ) else "Retry"
+            workflow.last_error = str(exc)[:2000]
+            workflow.last_checked_at = datetime.utcnow()
+            project = db.get(Project, workflow.project_id)
+            if project:
+                record_psa_activity(
+                    db, project.id, "psa_ticket_retry" if workflow.status == "Retry" else "psa_ticket_review",
+                    f"Rev PSA automation could not process {workflow.ticket_description}: {workflow.last_error}",
+                )
+            db.commit()
+    finally:
+        db.close()
+
+async def psa_ticket_maintenance():
+    interval = max(300, int(os.getenv("REVIO_PSA_TICKET_CHECK_SECONDS", "3600")))
+    while True:
+        await asyncio.sleep(interval)
+        db = SessionLocal()
+        try:
+            workflow_ids = list(db.scalars(
+                select(PsaTicketWorkflow.id).where(
+                    PsaTicketWorkflow.status.in_(("Pending", "Retry", "Open"))
+                )
+            ).all())
+        finally:
+            db.close()
+        for workflow_id in workflow_ids:
+            await process_psa_ticket_workflow(workflow_id)
+
+
 async def graph_send_hardware_order_email(project: dict, billing_customer: dict, signed_quote: dict):
     if not graph_configured():
         raise RuntimeError("Microsoft Graph is not configured")
@@ -1213,13 +1344,16 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     ensure_database_schema()
     seed_database()
+    ensure_project_workflow_milestones()
     graph_task = asyncio.create_task(graph_subscription_maintenance())
     hardware_task = asyncio.create_task(hardware_order_maintenance())
+    psa_ticket_task = asyncio.create_task(psa_ticket_maintenance())
     try:
         yield
     finally:
         graph_task.cancel()
         hardware_task.cancel()
+        psa_ticket_task.cancel()
 
 app = FastAPI(title="Bullfrog Project Command Center", version="1.5.0", lifespan=lifespan)
 def webex_oauth_configured() -> bool:
