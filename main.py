@@ -350,6 +350,8 @@ def normalize_customer_name(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", (value or "").casefold())
 
 def revio_billing_configured() -> bool:
+    if (os.getenv("REVIO_BILLING_AUTHORIZATION") or "").strip():
+        return True
     return all((os.getenv(key) or "").strip() for key in (
         "REVIO_BILLING_USERNAME", "REVIO_BILLING_CLIENT_CODE", "REVIO_BILLING_PASSWORD",
     ))
@@ -373,15 +375,23 @@ async def revio_billing_find_customer(customer_name: str) -> dict:
     if not revio_billing_configured():
         raise RuntimeError("Rev.io Billing is not configured")
     base_url = os.getenv("REVIO_BILLING_BASE_URL", "https://restapi.rev.io").rstrip("/")
-    username = os.environ["REVIO_BILLING_USERNAME"].strip()
-    client_code = os.environ["REVIO_BILLING_CLIENT_CODE"].strip()
-    password = os.environ["REVIO_BILLING_PASSWORD"]
-    auth = httpx.BasicAuth(f"{username}@{client_code}", password)
+    authorization = (os.getenv("REVIO_BILLING_AUTHORIZATION") or "").strip()
+    headers = {"Accept": "application/json"}
+    auth = None
+    if authorization:
+        if not authorization.lower().startswith("basic "):
+            authorization = f"Basic {authorization}"
+        headers["Authorization"] = authorization
+    else:
+        username = os.environ["REVIO_BILLING_USERNAME"].strip()
+        client_code = os.environ["REVIO_BILLING_CLIENT_CODE"].strip()
+        password = os.environ["REVIO_BILLING_PASSWORD"]
+        auth = httpx.BasicAuth(f"{username}@{client_code}", password)
     async with httpx.AsyncClient(timeout=30.0, auth=auth) as client:
         response = await client.get(
             f"{base_url}/v1/Customers",
             params={"search.name": customer_name, "search.page_size": 25},
-            headers={"Accept": "application/json"},
+            headers=headers,
         )
         response.raise_for_status()
     payload = response.json()
