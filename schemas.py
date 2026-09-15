@@ -73,6 +73,7 @@ class ActivityOut(BaseModel):
 class ProjectBase(BaseModel):
     customer: str = Field(min_length=1, max_length=160)
     customer_id: str | None = Field(default=None, max_length=50)
+    quote_id: str | None = Field(default=None, max_length=50)
     project_name: str = Field(min_length=1, max_length=200)
     project_type: str = "Other"
     technical_manager: str = "Chad"
@@ -95,6 +96,7 @@ class ProjectCreate(ProjectBase):
 class ProjectUpdate(BaseModel):
     customer: str | None = None
     customer_id: str | None = None
+    quote_id: str | None = None
     project_name: str | None = None
     project_type: str | None = None
     technical_manager: str | None = None
