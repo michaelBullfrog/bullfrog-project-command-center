@@ -1102,6 +1102,26 @@ def ensure_project_workflow_milestones():
                     item.name = "Signed Proposal"
                 elif normalized_name == "hardwarepaid":
                     item.name = "Hardware Payment Check"
+            payment_checks = [
+                item for item in existing_items
+                if normalize_customer_name(item.name) == "hardwarepaymentcheck"
+            ]
+            if len(payment_checks) > 1:
+                keeper = payment_checks[0]
+                completed = next((item for item in payment_checks if item.status == "Complete"), None)
+                dated = next((item for item in payment_checks if item.due_date), None)
+                if completed:
+                    keeper.status = "Complete"
+                    keeper.completed_date = completed.completed_date or date.today()
+                if not keeper.due_date and dated:
+                    keeper.due_date = dated.due_date
+                for duplicate in payment_checks[1:]:
+                    db.delete(duplicate)
+                existing_items = [
+                    item for item in existing_items
+                    if item not in payment_checks[1:]
+                ]
+
             existing_names = {normalize_customer_name(item.name) for item in existing_items}
             for name in WORKFLOW_MILESTONES.get(project.project_type, []):
                 if normalize_customer_name(name) not in existing_names:
