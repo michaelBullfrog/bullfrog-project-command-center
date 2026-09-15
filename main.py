@@ -61,7 +61,7 @@ logger = logging.getLogger("bullfrog.graph")
 TEMPLATES = {
     "Webex Calling": [
         "Signed Proposal", "Internal Handoff", "Kickoff Call", "Call Flow", "User Spreadsheet",
-        "LOA Document", "Port Submitted", "Hardware Paid", "Hardware Ordered", "FOC Received", "Port Complete",
+        "LOA Document", "Port Submitted", "Hardware Payment Check", "Hardware Ordered", "FOC Received", "Port Complete",
         "Hardware Delivered", "Devices Registered", "Users Added", "Go Live Follow Up", "Go Live", "Closeout",
     ],
     "Webex Contact Center": [
@@ -69,10 +69,10 @@ TEMPLATES = {
         "Users Added", "Agent Setup", "Integrations", "Flow Build", "Testing", "Supervisor Training",
         "Go Live Follow Up", "Go Live", "Closeout",
     ],
-    "Meraki": ["Signed Proposal", "Internal Handoff", "Kickoff Call", "Hardware Paid", "Hardware Ordered", "Hardware Delivered",
+    "Meraki": ["Signed Proposal", "Internal Handoff", "Kickoff Call", "Hardware Payment Check", "Hardware Ordered", "Hardware Delivered",
         "Devices Registered", "Network Design", "Configuration", "Staging", "Installation", "Validation",
         "Documentation", "Go Live Follow Up", "Closeout"],
-    "Network": ["Signed Proposal", "Internal Handoff", "Kickoff Call", "Hardware Paid", "Hardware Ordered", "Hardware Delivered",
+    "Network": ["Signed Proposal", "Internal Handoff", "Kickoff Call", "Hardware Payment Check", "Hardware Ordered", "Hardware Delivered",
         "Devices Registered", "Network Design", "Configuration", "Installation", "Validation",
         "Documentation", "Go Live Follow Up", "Closeout"],
     "Other": ["Signed Proposal", "Internal Handoff", "Kickoff Call", "Planning", "Implementation",
@@ -81,10 +81,10 @@ TEMPLATES = {
 
 WORKFLOW_MILESTONES = {
     "Webex Calling": ["Signed Proposal", "Kickoff Call", "LOA Document", "FOC Received", "Port Complete",
-                      "Hardware Paid", "Hardware Ordered", "Hardware Delivered", "User Spreadsheet"],
+                      "Hardware Payment Check", "Hardware Ordered", "Hardware Delivered", "User Spreadsheet"],
     "Webex Contact Center": ["Signed Proposal", "Kickoff Call", "User Spreadsheet"],
-    "Meraki": ["Signed Proposal", "Kickoff Call", "Hardware Paid", "Hardware Ordered", "Hardware Delivered"],
-    "Network": ["Signed Proposal", "Kickoff Call", "Hardware Paid", "Hardware Ordered", "Hardware Delivered"],
+    "Meraki": ["Signed Proposal", "Kickoff Call", "Hardware Payment Check", "Hardware Ordered", "Hardware Delivered"],
+    "Network": ["Signed Proposal", "Kickoff Call", "Hardware Payment Check", "Hardware Ordered", "Hardware Delivered"],
     "Other": ["Signed Proposal", "Kickoff Call"],
 }
 
@@ -1106,16 +1106,16 @@ def ensure_project_workflow_milestones():
                     existing_names.add(normalize_customer_name(name))
 
             # Balance checks that were previously started by Signed Proposal
-            # must wait for the new, explicit Hardware Paid milestone.
+            # must wait for the new, explicit Hardware Payment Check milestone.
             hardware_paid_complete = any(
-                normalize_customer_name(item.name) == "hardwarepaid" and item.status == "Complete"
+                normalize_customer_name(item.name) == "hardwarepaymentcheck" and item.status == "Complete"
                 for item in existing_items
             )
             hardware_workflow = db.scalar(select(HardwareOrderWorkflow).where(
                 HardwareOrderWorkflow.project_id == project.id
             ))
             if hardware_workflow and hardware_workflow.status != "Sent" and not hardware_paid_complete:
-                hardware_workflow.status = "Awaiting Hardware Paid"
+                hardware_workflow.status = "Awaiting Hardware Payment Check"
                 hardware_workflow.last_error = None
         db.commit()
     finally:
@@ -1847,7 +1847,7 @@ def update_milestone(
     should_check_hardware_order = (
         old_status != "Complete"
         and item.status == "Complete"
-        and normalized_milestone == "hardwarepaid"
+        and normalized_milestone == "hardwarepaymentcheck"
     )
     psa_workflow_id = None
     if should_check_hardware_order:
@@ -1863,7 +1863,7 @@ def update_milestone(
         if workflow.status != "Sent":
             record_automation_activity(
                 db, item.project_id, "hardware_order_queued",
-                "Hardware Paid is complete; queued the Rev.io Billing balance check",
+                "Hardware Payment Check is complete; queued the Rev.io Billing balance check",
             )
 
     if psa_ticket_automation_enabled() and old_status != "Complete" and item.status == "Complete":
