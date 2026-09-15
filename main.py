@@ -635,9 +635,10 @@ async def revio_billing_selected_source(customer_id: str, selected_id: str | Non
     clean_id = (selected_id or "").strip()
     if not clean_id:
         raise RuntimeError("Select a Rev.io Quote, Bill, or Charges entry before completing Quote Signed")
+    legacy_numeric = ":" not in clean_id and clean_id.isdigit()
     if ":" in clean_id:
         source_type, source_value = clean_id.split(":", 1)
-    elif clean_id.isdigit():
+    elif legacy_numeric:
         source_type, source_value = "request", clean_id
     else:
         raise RuntimeError("The selected Rev.io billing source is invalid")
@@ -656,7 +657,32 @@ async def revio_billing_selected_source(customer_id: str, selected_id: str | Non
             and str(revio_value(item, "customer_id", "customerId")) == str(customer_id)
         ]
         if len(matches) != 1:
-            raise RuntimeError(f"Rev.io Quote {source_value} was not found for the matched Billing customer")
+            if legacy_numeric:
+                # Projects saved before typed source IDs were introduced only
+                # contain a number. Detect whether that number is actually a
+                # bill or charge before asking the user to reselect it.
+                bill_payload, charge_payload = await asyncio.gather(
+                    revio_billing_get("/v1/Bills", {"search.bill_id": source_value, "search.page_size": 10}),
+                    revio_billing_get("/v1/Charges", {"search.charge_id": source_value, "search.page_size": 10}),
+                )
+                bill_match = any(
+                    str(revio_value(item, "bill_id", "billId", "id")) == source_value
+                    and str(revio_value(item, "customer_id", "customerId")) == str(customer_id)
+                    for item in revio_records(bill_payload)
+                )
+                if bill_match:
+                    return await revio_billing_selected_source(customer_id, f"bill:{source_value}")
+                charge_match = any(
+                    str(revio_value(item, "charge_id", "chargeId", "id")) == source_value
+                    and str(revio_value(item, "customer_id", "customerId")) == str(customer_id)
+                    for item in revio_records(charge_payload)
+                )
+                if charge_match:
+                    return await revio_billing_selected_source(customer_id, f"charge:{source_value}")
+            raise RuntimeError(
+                f"Rev.io source {source_value} was not found for the matched Billing customer. "
+                "Edit the project and select a Quote, Bill, or Charges entry again."
+            )
         request_item = matches[0]
         _, request_status = revio_billing_quote_status(request_item, statuses)
         if request_status.get("type") == "CANCELED":
@@ -713,6 +739,35 @@ async def revio_billing_selected_source(customer_id: str, selected_id: str | Non
             "status": "Billed",
             "signed_at": revio_value(bill, "cycle_date", "cycleDate", "created_date", "createdDate", "due_date", "dueDate"),
             "products": await revio_billing_charge_lines(charges),
+        }
+
+    if source_type == "charge":
+        if not source_value.isdigit():
+            raise RuntimeError("The selected Rev.io Charge ID is invalid")
+        payload = await revio_billing_get(
+            "/v1/Charges",
+            {"search.charge_id": source_value, "search.page_size": 10},
+        )
+        matches = [
+            item for item in revio_records(payload)
+            if str(revio_value(item, "charge_id", "chargeId", "id")) == source_value
+            and str(revio_value(item, "customer_id", "customerId")) == str(customer_id)
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(f"Rev.io Charge {source_value} was not found for the matched Billing customer")
+        charge = matches[0]
+        return {
+            "source_id": f"charge:{source_value}",
+            "source_type": "Charge",
+            "source_number": source_value,
+            "quote_id": source_value,
+            "description": str(
+                revio_value(charge, "description", "name", "charge_description", "chargeDescription")
+                or f"Rev.io Charge #{source_value}"
+            ),
+            "status": "Charged",
+            "signed_at": revio_value(charge, "created_date", "createdDate"),
+            "products": await revio_billing_charge_lines([charge]),
         }
 
     if source_type == "charges" and source_value == "unbilled":
