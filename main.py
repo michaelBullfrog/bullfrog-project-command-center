@@ -762,8 +762,9 @@ async def graph_send_hardware_order_email(project: dict, billing_customer: dict,
     project_type = html.escape(project["project_type"])
     sales_owner = html.escape(project.get("sales_owner") or "Not assigned")
     billing_id = html.escape(billing_customer["customer_id"])
-    quote_id = html.escape(signed_quote["quote_id"])
-    quote_description = html.escape(signed_quote["description"])
+    source_type = html.escape(signed_quote.get("source_type") or "Quote")
+    source_number = html.escape(str(signed_quote.get("source_number") or signed_quote.get("quote_id") or ""))
+    source_description = html.escape(signed_quote["description"])
     product_rows = "".join(
         "<tr><td>" + html.escape(str(product.get("quantity") or "")) + "</td><td>"
         + html.escape(product.get("description") or "") + "</td><td>"
@@ -771,21 +772,21 @@ async def graph_send_hardware_order_email(project: dict, billing_customer: dict,
         for product in signed_quote["products"]
     )
     if not product_rows:
-        product_rows = '<tr><td colspan="3">No product lines were returned for this quote.</td></tr>'
+        product_rows = '<tr><td colspan="3">No product or charge lines were returned for this selection.</td></tr>'
     project_link = f'<p><a href="{html.escape(app_url)}">Open Bullfrog Projects</a></p>' if app_url else ""
     body = f"""
-        <p>The signed quote for <strong>{customer}</strong> has cleared the Rev.io Billing balance check.</p>
+        <p>The approved billing selection for <strong>{customer}</strong> has cleared the Rev.io Billing balance check.</p>
         <table>
           <tr><td><strong>Rev.io Billing Customer ID</strong></td><td>{billing_id}</td></tr>
           <tr><td><strong>Project</strong></td><td>{project_name}</td></tr>
           <tr><td><strong>Project Type</strong></td><td>{project_type}</td></tr>
           <tr><td><strong>Sales Owner</strong></td><td>{sales_owner}</td></tr>
-          <tr><td><strong>Rev.io Quote ID</strong></td><td>{quote_id}</td></tr>
+          <tr><td><strong>Rev.io Source</strong></td><td>{source_type} #{source_number}</td></tr>
           <tr><td><strong>Verified Balance</strong></td><td>$0.00</td></tr>
         </table>
-        <h3>Signed Quote Description</h3>
-        <p style="white-space: pre-wrap;">{quote_description}</p>
-        <h3>Quoted Products</h3>
+        <h3>{source_type} Description</h3>
+        <p style="white-space: pre-wrap;">{source_description}</p>
+        <h3>Products and Charges</h3>
         <table>
           <thead><tr><th>Quantity</th><th>Description</th><th>Rate</th></tr></thead>
           <tbody>{product_rows}</tbody>
@@ -865,7 +866,8 @@ async def process_hardware_order_workflow(project_id: int):
         workflow.email_sent_at = datetime.utcnow()
         record_automation_activity(
             db, project.id, "hardware_order_sent",
-            f"Rev.io Billing verified Quote {signed_quote['quote_id']} and a $0.00 balance, then notified "
+            f"Rev.io Billing verified {signed_quote.get('source_type', 'Quote')} "
+            f"{signed_quote.get('source_number') or signed_quote.get('quote_id')} and a $0.00 balance, then notified "
             f"{os.getenv('HARDWARE_ORDER_EMAIL', 'sales@bullfrog.net')} to order hardware",
             old_value=previous_status, new_value="Sent",
         )
