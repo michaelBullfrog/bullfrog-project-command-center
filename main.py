@@ -749,6 +749,17 @@ async def revio_create_project_with_milestones(project: Project, db: Session) ->
         raise RuntimeError("A numeric Rev PSA Customer ID is required")
     if not project.revio_project_status_id:
         raise RuntimeError("Select a Rev PSA Project Status before creating the project")
+    start_date = project.start_date or project.created_at.date() or date.today()
+    if project.target_date and project.target_date < start_date:
+        raise RuntimeError("Target go-live cannot be earlier than the project start date")
+    if project.project_budget is not None and project.project_budget < 0:
+        raise RuntimeError("Project budget cannot be negative")
+    if project.budget_hours is not None and project.budget_hours < 0:
+        raise RuntimeError("Budget hours cannot be negative")
+    if project.estimated_hours is not None and project.estimated_hours < 0:
+        raise RuntimeError("Project hours cannot be negative")
+    if project.technical_manager not in PSA_USERS:
+        raise RuntimeError("The selected Customer Success Manager is not mapped to a Rev PSA user")
 
     options_payload = await revio_project_api_request(
         "GET", "/project-management/api/v1/projects/options"
@@ -777,7 +788,6 @@ async def revio_create_project_with_milestones(project: Project, db: Session) ->
             "isLead": is_lead,
         })
 
-    start_date = project.start_date or project.created_at.date() or date.today()
     payload = {
         "projectName": project.project_name,
         "projectStatusId": int(project.revio_project_status_id),
@@ -818,6 +828,48 @@ async def revio_create_project_with_milestones(project: Project, db: Session) ->
     result = await revio_sync_project_phases(project, db)
     result["warnings"] = warnings
     return result
+
+def revio_http_error_detail(exc: httpx.HTTPStatusError, fallback: str) -> str:
+    response = exc.response
+    details: list[str] = []
+
+    def collect(value, prefix: str = ""):
+        if value in (None, "", [], {}):
+            return
+        if isinstance(value, dict):
+            preferred = ("message", "detail", "title", "error", "description")
+            for key in preferred:
+                if key in value:
+                    collect(value[key], prefix)
+            errors = value.get("errors")
+            if errors is not None:
+                collect(errors, prefix)
+            for key, item in value.items():
+                if key in preferred or key == "errors" or item in (None, "", [], {}):
+                    continue
+                if isinstance(item, (dict, list)):
+                    collect(item, f"{prefix}{key}: ")
+        elif isinstance(value, list):
+            for item in value:
+                collect(item, prefix)
+        else:
+            text_value = str(value).strip()
+            if text_value:
+                details.append(f"{prefix}{text_value}")
+
+    try:
+        collect(response.json())
+    except ValueError:
+        if response.text and response.text.strip():
+            details.append(response.text.strip())
+
+    unique = []
+    for item in details:
+        if item not in unique:
+            unique.append(item)
+    if unique:
+        return f"{fallback}: {' | '.join(unique)}"[:4000]
+    return fallback
 
 def psa_ticket_ids() -> tuple[int, int, int, int]:
     return (
@@ -2181,12 +2233,9 @@ async def create_revio_project(project_id: int, request: Request, db: Session = 
         db.commit()
         return result
     except httpx.HTTPStatusError as exc:
-        detail = f"Rev PSA project creation failed with status {exc.response.status_code}"
-        try:
-            body = exc.response.json()
-            detail = body.get("message") or body.get("error") or detail
-        except ValueError:
-            pass
+        detail = revio_http_error_detail(
+            exc, f"Rev PSA project creation failed with status {exc.response.status_code}"
+        )
         project.revio_sync_status = "Failed"
         project.revio_sync_error = str(detail)[:4000]
         db.commit()
@@ -2217,12 +2266,9 @@ async def sync_revio_project(project_id: int, request: Request, db: Session = De
         db.commit()
         return result
     except httpx.HTTPStatusError as exc:
-        detail = f"Rev PSA project update failed with status {exc.response.status_code}"
-        try:
-            body = exc.response.json()
-            detail = body.get("message") or body.get("error") or detail
-        except ValueError:
-            pass
+        detail = revio_http_error_detail(
+            exc, f"Rev PSA project update failed with status {exc.response.status_code}"
+        )
         project.revio_sync_error = str(detail)[:4000]
         db.commit()
         raise HTTPException(502, detail)
@@ -2250,12 +2296,9 @@ async def sync_revio_project_phases(project_id: int, request: Request, db: Sessi
         db.commit()
         return result
     except httpx.HTTPStatusError as exc:
-        detail = f"Rev PSA phase sync failed with status {exc.response.status_code}"
-        try:
-            body = exc.response.json()
-            detail = body.get("message") or body.get("error") or detail
-        except ValueError:
-            pass
+        detail = revio_http_error_detail(
+            exc, f"Rev PSA phase sync failed with status {exc.response.status_code}"
+        )
         project.revio_sync_status = "Phase Sync Failed"
         project.revio_sync_error = str(detail)[:4000]
         db.commit()
