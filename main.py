@@ -1034,9 +1034,7 @@ def revio_work_phase_id(project: Project, item: ProjectWorkItem) -> str:
         )
     return str(phase_id)
 
-def revio_work_ticket_payload(
-    project: Project, item: ProjectWorkItem, *, include_board: bool
-) -> dict:
+def revio_work_ticket_payload(project: Project, item: ProjectWorkItem) -> dict:
     if not (project.customer_id or "").isdigit():
         raise RuntimeError("A numeric Rev PSA Customer ID is required")
     assignee = item.assignee_name or work_item_assignee(project, item.owner_role)
@@ -1044,7 +1042,7 @@ def revio_work_ticket_payload(
         raise RuntimeError(f"{item.name} does not have a mapped Rev PSA assignee")
     ticket_type_id, new_status_id, _, priority_id = psa_ticket_ids()
     hours = f"\nEstimated effort: {item.estimated_hours:g} hours" if item.estimated_hours is not None else ""
-    payload = {
+    return {
         "customerId": int(project.customer_id),
         "ticketDescription": f"{project.customer} — {item.name}",
         "ticketTypeId": ticket_type_id,
@@ -1065,14 +1063,11 @@ def revio_work_ticket_payload(
             f"Phase: {item.phase_name}"
         ),
     }
-    if include_board:
-        payload["userGroupTarget"] = revio_project_ticket_board()
-    return payload
 
 async def revio_create_work_ticket(project: Project, item: ProjectWorkItem) -> str:
     path = os.getenv("REVIO_PSA_TICKET_CREATE_PATH", "/psac/api/v1/ticket")
     response = await revio_psa_api_request(
-        "POST", path, json_body=revio_work_ticket_payload(project, item, include_board=False)
+        "POST", path, json_body=revio_work_ticket_payload(project, item)
     )
     data = response.get("data", response)
     ticket_id = revio_value(data, "ticketId", "ticket_id", "id") if isinstance(data, dict) else None
@@ -1082,7 +1077,7 @@ async def revio_create_work_ticket(project: Project, item: ProjectWorkItem) -> s
         raise RuntimeError("Rev PSA created the ticket but did not return a ticket ID")
     return str(ticket_id)
 
-async def revio_update_work_ticket(
+async def revio_update_work_ticket_assignment(
     project: Project, item: ProjectWorkItem, ticket_id: str
 ):
     path_template = os.getenv(
@@ -1091,8 +1086,48 @@ async def revio_update_work_ticket(
     return await revio_psa_api_request(
         "PUT",
         path_template.format(ticket_id=quote(str(ticket_id), safe="")),
-        json_body=revio_work_ticket_payload(project, item, include_board=True),
+        json_body=revio_work_ticket_payload(project, item),
     )
+
+async def revio_onboarding_board_id() -> str:
+    configured_id = os.getenv("REVIO_PSA_PROJECT_TICKET_BOARD_ID", "").strip()
+    if configured_id:
+        return configured_id
+    target_name = revio_project_ticket_board()
+    path = os.getenv("REVIO_PSA_TICKET_BOARDS_PATH", "/psac/api/v1/boards")
+    response = await revio_psa_api_request("GET", path, params={"lookup": "true"})
+    boards = revio_records(response)
+    match = next((
+        board for board in boards
+        if normalize_customer_name(str(revio_value(
+            board, "boardName", "name", "displayName", "label"
+        ) or "")) == normalize_customer_name(target_name)
+    ), None)
+    if not match:
+        available = ", ".join(
+            str(revio_value(board, "boardName", "name", "displayName", "label"))
+            for board in boards[:20]
+            if revio_value(board, "boardName", "name", "displayName", "label")
+        )
+        suffix = f" Available boards: {available}" if available else ""
+        raise RuntimeError(f"Rev PSA board {target_name} was not found.{suffix}")
+    board_id = revio_value(match, "boardId", "ticketBoardId", "id", "value")
+    if board_id in (None, ""):
+        raise RuntimeError(f"Rev PSA board {target_name} did not include an ID")
+    return str(board_id)
+
+async def revio_assign_ticket_board(ticket_id: str) -> str:
+    board_id = await revio_onboarding_board_id()
+    normalized_ticket = int(ticket_id) if str(ticket_id).isdigit() else str(ticket_id)
+    normalized_board = int(board_id) if str(board_id).isdigit() else str(board_id)
+    path = os.getenv(
+        "REVIO_PSA_TICKET_BULK_BOARD_PATH", "/psac/api/v1/tickets/bulk/board"
+    )
+    await revio_psa_api_request(
+        "PUT", path,
+        json_body={"ticketIds": [normalized_ticket], "boardId": normalized_board},
+    )
+    return board_id
 
 async def revio_link_work_item(
     item: ProjectWorkItem, external_id: str, phase_id: str
@@ -1137,7 +1172,7 @@ async def sync_project_work_items(project: Project, db: Session) -> dict:
         owner_role = project_work_owner_role(item.phase_name)
         item.owner_role = owner_role
         item.assignee_name = work_item_assignee(project, owner_role)
-        board_warning = None
+        routing_warnings: list[str] = []
         try:
             phase_id = revio_work_phase_id(project, item)
             item.revio_phase_id = phase_id
@@ -1155,26 +1190,51 @@ async def sync_project_work_items(project: Project, db: Session) -> dict:
                 db.flush()
             if item.item_type == "Ticket":
                 try:
-                    await revio_update_work_ticket(project, item, external_id)
+                    await revio_update_work_ticket_assignment(project, item, external_id)
+                except httpx.HTTPStatusError as exc:
+                    routing_warnings.append(revio_http_error_detail(
+                        exc, f"Ticket {external_id} assignee update failed"
+                    ))
+                except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
+                    routing_warnings.append(f"Ticket {external_id} assignee update failed: {exc}")
+                try:
+                    await revio_assign_ticket_board(external_id)
                     board_updated += 1
+                except httpx.HTTPStatusError as exc:
+                    board_failed += 1
+                    routing_warnings.append(revio_http_error_detail(
+                        exc,
+                        f"Ticket {external_id} was created, but assigning it to "
+                        f"{revio_project_ticket_board()} failed",
+                    ))
                 except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
                     board_failed += 1
-                    board_warning = (
+                    routing_warnings.append(
                         f"Ticket {external_id} was created, but assigning it to "
                         f"{revio_project_ticket_board()} failed: {exc}"
                     )
-                    errors.append(f"{item.name}: {board_warning}")
+            routing_warning = " | ".join(routing_warnings) or None
+            if routing_warning:
+                errors.append(f"{item.name}: {routing_warning}")
             if item.revio_work_item_id:
-                item.status = "Linked" if not board_warning else "Linked - Board Warning"
-                item.sync_error = board_warning
+                item.status = "Linked" if not routing_warning else "Linked - Routing Warning"
+                item.sync_error = routing_warning
                 item.synced_at = item.synced_at or datetime.utcnow()
                 already_linked += 1
                 continue
             item.revio_work_item_id = await revio_link_work_item(item, external_id, phase_id)
-            item.status = "Linked" if not board_warning else "Linked - Board Warning"
-            item.sync_error = board_warning
+            item.status = "Linked" if not routing_warning else "Linked - Routing Warning"
+            item.sync_error = routing_warning
             item.synced_at = datetime.utcnow()
             linked += 1
+        except httpx.HTTPStatusError as exc:
+            detail = revio_http_error_detail(
+                exc, f"Rev PSA work link failed with status {exc.response.status_code}"
+            )
+            item.status = "Needs Attention"
+            item.sync_error = detail[:2000]
+            failed += 1
+            errors.append(f"{item.name}: {detail}")
         except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
             item.status = "Needs Attention"
             item.sync_error = str(exc)[:2000]
