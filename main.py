@@ -2155,7 +2155,7 @@ async def graph_send_project_notification(
         raise RuntimeError("Microsoft Graph is not configured")
     sender_address = (
         sender
-        or os.getenv("PSA_NOTIFICATION_SENDER", "michael@bullfrog.net")
+        or os.getenv("PSA_NOTIFICATION_SENDER", "projectintake@bullfrog.net")
     ).strip()
     if not sender_address:
         raise RuntimeError("The project notification sender is not configured")
@@ -2823,7 +2823,7 @@ def get_current_user(request: Request):
 async def test_project_notifications(request: Request):
     user = request.session.get("user") or {}
     requested_by = html.escape(user.get("name") or user.get("email") or "Bullfrog user")
-    sender = os.getenv("PSA_NOTIFICATION_SENDER", "michael@bullfrog.net").strip()
+    sender = os.getenv("PSA_NOTIFICATION_SENDER", "projectintake@bullfrog.net").strip()
     recipients = [
         ("Go Live", os.getenv("GO_LIVE_NOTIFICATION_EMAIL", "carrie@bullfrog.net").strip()),
         ("Milestone Alert", os.getenv(
