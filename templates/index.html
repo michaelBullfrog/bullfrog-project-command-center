@@ -103,6 +103,7 @@
           <label class="check form-check"><input name="is_billable" type="checkbox" checked> Billable project</label>
           <label class="span-2">Scope / Rev PSA Project Description<textarea name="scope" rows="3"></textarea></label>
           <label class="span-2">Rev PSA Project Notes<textarea name="project_notes" rows="2"></textarea></label>
+          <label class="span-2 file-label" id="project-attachments-row">Project attachments <span>Added to the project Notes section · PNG, JPG, PDF, Word, Excel or TXT · 10 MB each</span><input name="project_files" type="file" accept=".png,.jpg,.jpeg,.pdf,.doc,.docx,.xls,.xlsx,.txt" multiple></label>
           <label class="span-2 check form-check" id="create-revio-row"><input name="create_in_revio" type="checkbox" checked> Create the project and its milestones in Rev PSA after saving</label>
           <span class="lookup-status span-2" id="revio-project-status"></span>
         </div>
@@ -132,6 +133,6 @@
     </div>
   </div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=1.13.3"></script>
+  <script src="/static/app.js?v=1.13.4"></script>
 </body>
 </html>
