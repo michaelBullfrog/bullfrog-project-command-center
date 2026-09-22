@@ -79,6 +79,63 @@ TEMPLATES = {
         "Testing", "Customer Acceptance", "Go Live Follow Up", "Closeout"],
 }
 
+PHASE_TEMPLATES = {
+    "Webex Calling": [
+        {"name": "Planning & Handoff", "owner": "csm", "milestones": ["Signed Proposal", "Internal Handoff", "Kickoff Call"]},
+        {"name": "Design & Discovery", "owner": "engineer", "milestones": ["Call Flow", "User Spreadsheet", "LOA Document"]},
+        {"name": "Hardware & Provisioning", "owner": "engineer", "milestones": ["Hardware Payment Check", "Hardware Ordered", "Hardware Delivered", "Devices Registered", "Users Added"]},
+        {"name": "Number Porting", "owner": "engineer", "milestones": ["Port Submitted", "FOC Received", "Port Complete"]},
+        {"name": "Go Live & Closeout", "owner": "csm", "milestones": ["Go Live Follow Up", "Go Live", "Closeout"]},
+    ],
+    "Webex Contact Center": [
+        {"name": "Planning & Handoff", "owner": "csm", "milestones": ["Signed Proposal", "Internal Handoff", "Kickoff Call"]},
+        {"name": "Design", "owner": "engineer", "milestones": ["Call Flow", "User Spreadsheet"]},
+        {"name": "Build & Integration", "owner": "engineer", "milestones": ["Users Added", "Agent Setup", "Integrations", "Flow Build"]},
+        {"name": "Testing & Training", "owner": "engineer", "milestones": ["Testing", "Supervisor Training"]},
+        {"name": "Go Live & Closeout", "owner": "csm", "milestones": ["Go Live Follow Up", "Go Live", "Closeout"]},
+    ],
+    "Meraki": [
+        {"name": "Planning & Handoff", "owner": "csm", "milestones": ["Signed Proposal", "Internal Handoff", "Kickoff Call"]},
+        {"name": "Hardware", "owner": "sales", "milestones": ["Hardware Payment Check", "Hardware Ordered", "Hardware Delivered"]},
+        {"name": "Design & Configuration", "owner": "engineer", "milestones": ["Devices Registered", "Network Design", "Configuration", "Staging"]},
+        {"name": "Deployment", "owner": "engineer", "milestones": ["Installation", "Validation", "Documentation"]},
+        {"name": "Closeout", "owner": "csm", "milestones": ["Go Live Follow Up", "Closeout"]},
+    ],
+    "Network": [
+        {"name": "Planning & Handoff", "owner": "csm", "milestones": ["Signed Proposal", "Internal Handoff", "Kickoff Call"]},
+        {"name": "Hardware", "owner": "sales", "milestones": ["Hardware Payment Check", "Hardware Ordered", "Hardware Delivered"]},
+        {"name": "Design & Configuration", "owner": "engineer", "milestones": ["Devices Registered", "Network Design", "Configuration"]},
+        {"name": "Deployment", "owner": "engineer", "milestones": ["Installation", "Validation", "Documentation"]},
+        {"name": "Closeout", "owner": "csm", "milestones": ["Go Live Follow Up", "Closeout"]},
+    ],
+    "Other": [
+        {"name": "Planning & Handoff", "owner": "csm", "milestones": ["Signed Proposal", "Internal Handoff", "Kickoff Call", "Planning"]},
+        {"name": "Delivery", "owner": "engineer", "milestones": ["Implementation", "Testing", "Customer Acceptance"]},
+        {"name": "Closeout", "owner": "csm", "milestones": ["Go Live Follow Up", "Closeout"]},
+    ],
+}
+
+def milestone_phase_info(project_type: str, milestone_name: str) -> tuple[str, str]:
+    for phase in PHASE_TEMPLATES.get(project_type, PHASE_TEMPLATES["Other"]):
+        if milestone_name in phase["milestones"]:
+            return phase["name"], phase["owner"]
+    return "Additional", "engineer"
+
+def ensure_project_phase_names():
+    db = SessionLocal()
+    try:
+        projects = list(db.scalars(project_query()).unique().all())
+        changed = False
+        for project in projects:
+            for milestone in project.milestones:
+                if not milestone.phase_name:
+                    milestone.phase_name = milestone_phase_info(project.project_type, milestone.name)[0]
+                    changed = True
+        if changed:
+            db.commit()
+    finally:
+        db.close()
+
 WORKFLOW_MILESTONES = {
     "Webex Calling": ["Signed Proposal", "Kickoff Call", "LOA Document", "FOC Received", "Port Complete",
                       "Hardware Payment Check", "Hardware Ordered", "Hardware Delivered", "User Spreadsheet"],
@@ -168,7 +225,7 @@ def seed_database():
             db.add(project)
             db.flush()
             for name in TEMPLATES[project.project_type]:
-                db.add(Milestone(project_id=project.id, name=name))
+                db.add(Milestone(project_id=project.id, name=name, phase_name=milestone_phase_info(project.project_type, name)[0]))
         db.commit()
     finally:
         db.close()
@@ -346,9 +403,15 @@ def ensure_database_schema():
             with engine.begin() as connection:
                 connection.execute(text(f"ALTER TABLE projects ADD COLUMN {column_name} {column_type}"))
     milestone_columns = {column["name"] for column in inspect(engine).get_columns("milestones")}
-    if "revio_milestone_id" not in milestone_columns:
-        with engine.begin() as connection:
-            connection.execute(text("ALTER TABLE milestones ADD COLUMN revio_milestone_id VARCHAR(50)"))
+    milestone_additions = {
+        "revio_milestone_id": "VARCHAR(50)",
+        "revio_phase_id": "VARCHAR(50)",
+        "phase_name": "VARCHAR(120)",
+    }
+    for column_name, column_type in milestone_additions.items():
+        if column_name not in milestone_columns:
+            with engine.begin() as connection:
+                connection.execute(text(f"ALTER TABLE milestones ADD COLUMN {column_name} {column_type}"))
 
 def revio_configured() -> bool:
     return bool(os.getenv("REVIO_API_KEY", "").strip())
@@ -517,6 +580,135 @@ def revio_role_id(roles: list[dict], *terms: str) -> int | None:
                 return int(role["id"])
     return None
 
+def revio_phase_owner(project: Project, owner_role: str) -> str | None:
+    if owner_role == "csm":
+        return PSA_USERS.get(project.technical_manager)
+    if owner_role == "sales":
+        return PSA_USERS.get(project.sales_owner) or PSA_USERS.get(project.technical_manager)
+    return PSA_USERS.get(project.engineer) or PSA_USERS.get(project.technical_manager)
+
+def revio_phase_dates(project: Project, index: int, total: int) -> tuple[date, date | None]:
+    start = project.start_date or project.created_at.date() or date.today()
+    if not project.target_date or project.target_date <= start:
+        return start, project.target_date
+    days = (project.target_date - start).days
+    phase_start = start + timedelta(days=round(days * index / total))
+    phase_end = start + timedelta(days=round(days * (index + 1) / total))
+    return phase_start, phase_end
+
+async def revio_sync_project_phases(project: Project, db: Session) -> dict:
+    if not project.revio_project_id:
+        raise RuntimeError("Create the Rev PSA project before syncing phases")
+    phase_status_id = int(
+        (os.getenv("REVIO_PSA_PHASE_STATUS_ID") or "").strip()
+        or project.revio_project_status_id
+        or 0
+    )
+    if not phase_status_id:
+        raise RuntimeError("A Rev PSA phase status is required")
+
+    definitions = PHASE_TEMPLATES.get(project.project_type, PHASE_TEMPLATES["Other"])
+    configured_names = [phase["name"] for phase in definitions]
+    grouped: dict[str, list[Milestone]] = {name: [] for name in configured_names}
+    for milestone in project.milestones:
+        phase_name = milestone.phase_name or milestone_phase_info(project.project_type, milestone.name)[0]
+        milestone.phase_name = phase_name
+        grouped.setdefault(phase_name, []).append(milestone)
+    phase_names = [name for name in configured_names if grouped.get(name)]
+    phase_names += [name for name in grouped if name not in configured_names and grouped[name]]
+
+    phases_created = 0
+    milestones_created = 0
+    milestones_moved = 0
+    total_phases = max(1, len(phase_names))
+    for index, phase_name in enumerate(phase_names):
+        milestones = grouped[phase_name]
+        phase_definition = next((item for item in definitions if item["name"] == phase_name), None)
+        owner_role = (phase_definition or {}).get("owner", "engineer")
+        owner_id = revio_phase_owner(project, owner_role)
+        phase_start, phase_end = revio_phase_dates(project, index, total_phases)
+        existing_phase_id = next((item.revio_phase_id for item in milestones if item.revio_phase_id), None)
+        completed = sum(1 for item in milestones if item.status == "Complete")
+        progress = round((completed / len(milestones)) * 100, 2) if milestones else 0
+
+        if existing_phase_id:
+            phase_id = existing_phase_id
+        else:
+            phase_payload = {
+                "phaseName": phase_name,
+                "phaseSequence": index + 1,
+                "phaseStatusId": phase_status_id,
+                "startDate": revio_datetime(phase_start),
+                "endDate": revio_datetime(phase_end),
+                "description": f"{phase_name} phase for {project.project_name}",
+                "phaseOwnerId": owner_id,
+                "budgetAllocation": (project.project_budget / total_phases) if project.project_budget is not None else None,
+                "plannedHours": (project.budget_hours / total_phases) if project.budget_hours is not None else None,
+                "isAtRisk": project.risk == "Red",
+                "progressPercent": progress,
+                "baselineStartDate": revio_datetime(phase_start),
+                "baselineEndDate": revio_datetime(phase_end),
+            }
+            phase_payload = {key: value for key, value in phase_payload.items() if value is not None}
+            phase_response = await revio_project_api_request(
+                "POST",
+                f"/project-management/api/v1/projects/{quote(str(project.revio_project_id), safe='')}/phases",
+                json_body=phase_payload,
+            )
+            phase_data = phase_response.get("data", phase_response)
+            phase_id = revio_value(phase_data, "phaseId", "phase_id", "id") if isinstance(phase_data, dict) else None
+            if phase_id in (None, ""):
+                phase_id = revio_value(phase_response, "phaseId", "phase_id", "id")
+            if phase_id in (None, ""):
+                raise RuntimeError(f"Rev PSA created phase {phase_name} but did not return a Phase ID")
+            phase_id = str(phase_id)
+            phases_created += 1
+
+        for milestone in milestones:
+            milestone.revio_phase_id = str(phase_id)
+            target = milestone.due_date or phase_end or project.target_date or phase_start
+            milestone_payload = {
+                "milestoneName": milestone.name,
+                "description": f"{phase_name} milestone for {project.project_name}",
+                "targetDate": revio_datetime(target),
+                "ownerId": owner_id,
+                "phaseId": int(phase_id),
+            }
+            milestone_payload = {key: value for key, value in milestone_payload.items() if value is not None}
+            if milestone.revio_milestone_id:
+                await revio_project_api_request(
+                    "PUT",
+                    f"/project-management/api/v1/milestones/{quote(str(milestone.revio_milestone_id), safe='')}",
+                    json_body=milestone_payload,
+                )
+                milestones_moved += 1
+            else:
+                milestone_response = await revio_project_api_request(
+                    "POST",
+                    f"/project-management/api/v1/projects/{quote(str(project.revio_project_id), safe='')}/milestones",
+                    json_body=milestone_payload,
+                )
+                milestone_data = milestone_response.get("data", milestone_response)
+                milestone_id = revio_value(milestone_data, "milestoneId", "milestone_id", "id") if isinstance(milestone_data, dict) else None
+                if milestone_id in (None, ""):
+                    milestone_id = revio_value(milestone_response, "milestoneId", "milestone_id", "id")
+                if milestone_id in (None, ""):
+                    raise RuntimeError(f"Rev PSA created milestone {milestone.name} but did not return a Milestone ID")
+                milestone.revio_milestone_id = str(milestone_id)
+                milestones_created += 1
+
+    project.revio_sync_status = "Synced with Phases"
+    project.revio_sync_error = None
+    project.revio_synced_at = datetime.utcnow()
+    db.flush()
+    return {
+        "revio_project_id": project.revio_project_id,
+        "sync_status": project.revio_sync_status,
+        "phases_created": phases_created,
+        "milestones_created": milestones_created,
+        "milestones_moved": milestones_moved,
+    }
+
 async def revio_create_project_with_milestones(project: Project, db: Session) -> dict:
     if not (project.customer_id or "").isdigit():
         raise RuntimeError("A numeric Rev PSA Customer ID is required")
@@ -583,54 +775,13 @@ async def revio_create_project_with_milestones(project: Project, db: Session) ->
         raise RuntimeError("Rev PSA created the project but did not return a Project ID")
 
     project.revio_project_id = str(project_id)
-    project.revio_sync_status = "Creating Milestones"
+    project.revio_sync_status = "Creating Phases"
     project.revio_sync_error = None
     project.revio_synced_at = datetime.utcnow()
     db.flush()
-
-    created_milestones = 0
-    milestone_errors = []
-    owner_id = PSA_USERS.get(project.engineer) or PSA_USERS.get(project.technical_manager)
-    for milestone in project.milestones:
-        if milestone.revio_milestone_id:
-            continue
-        target = milestone.due_date or project.target_date or start_date
-        milestone_payload = {
-            "milestoneName": milestone.name,
-            "description": f"Bullfrog project milestone for {project.project_name}",
-            "targetDate": revio_datetime(target),
-            "ownerId": owner_id,
-        }
-        milestone_payload = {key: value for key, value in milestone_payload.items() if value is not None}
-        try:
-            milestone_response = await revio_project_api_request(
-                "POST",
-                f"/project-management/api/v1/projects/{quote(str(project_id), safe='')}/milestones",
-                json_body=milestone_payload,
-            )
-            milestone_data = milestone_response.get("data", milestone_response)
-            milestone_id = revio_value(milestone_data, "milestoneId", "milestone_id", "id") if isinstance(milestone_data, dict) else None
-            if milestone_id not in (None, ""):
-                milestone.revio_milestone_id = str(milestone_id)
-            created_milestones += 1
-        except Exception as exc:
-            logger.exception("Unable to create Rev PSA milestone %s", milestone.name)
-            milestone_errors.append(f"{milestone.name}: {exc}")
-
-    if milestone_errors:
-        project.revio_sync_status = "Partial"
-        project.revio_sync_error = " | ".join(milestone_errors)[:4000]
-        warnings.append(f"{len(milestone_errors)} milestone(s) could not be created and can be retried.")
-    else:
-        project.revio_sync_status = "Synced"
-        project.revio_sync_error = None
-    project.revio_synced_at = datetime.utcnow()
-    return {
-        "revio_project_id": project.revio_project_id,
-        "sync_status": project.revio_sync_status,
-        "milestones_created": created_milestones,
-        "warnings": warnings,
-    }
+    result = await revio_sync_project_phases(project, db)
+    result["warnings"] = warnings
+    return result
 
 def psa_ticket_ids() -> tuple[int, int, int, int]:
     return (
@@ -1642,6 +1793,7 @@ async def lifespan(app: FastAPI):
     ensure_database_schema()
     seed_database()
     ensure_project_workflow_milestones()
+    ensure_project_phase_names()
     graph_task = asyncio.create_task(graph_subscription_maintenance())
     hardware_task = asyncio.create_task(hardware_order_maintenance())
     psa_ticket_task = asyncio.create_task(psa_ticket_maintenance()) if psa_ticket_automation_enabled() else None
@@ -1653,7 +1805,7 @@ async def lifespan(app: FastAPI):
         if psa_ticket_task:
             psa_ticket_task.cancel()
 
-app = FastAPI(title="Bullfrog Project Command Center", version="1.5.0", lifespan=lifespan)
+app = FastAPI(title="Bullfrog Project Command Center", version="1.6.0", lifespan=lifespan)
 def webex_oauth_configured() -> bool:
     return all(os.getenv(key) for key in (
         "WEBEX_CLIENT_ID", "WEBEX_CLIENT_SECRET", "WEBEX_REDIRECT_URI",
@@ -2005,6 +2157,41 @@ async def create_revio_project(project_id: int, request: Request, db: Session = 
         raise HTTPException(502, detail)
     except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
         project.revio_sync_status = "Failed"
+        project.revio_sync_error = str(exc)[:4000]
+        db.commit()
+        raise HTTPException(502, str(exc))
+
+@app.post("/api/projects/{project_id}/revio/sync-phases")
+async def sync_revio_project_phases(project_id: int, request: Request, db: Session = Depends(get_db)):
+    project = db.scalar(project_query().where(Project.id == project_id))
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if not project.revio_project_id:
+        raise HTTPException(409, "Create the Rev PSA project before syncing phases")
+    project.revio_sync_status = "Syncing Phases"
+    project.revio_sync_error = None
+    db.commit()
+    try:
+        result = await revio_sync_project_phases(project, db)
+        record_activity(
+            db, project.id, request, "revio_phases_synced",
+            f"Synced {result['phases_created']} Rev PSA phase(s), created {result['milestones_created']} milestone(s), and organized {result['milestones_moved']} existing milestone(s)",
+        )
+        db.commit()
+        return result
+    except httpx.HTTPStatusError as exc:
+        detail = f"Rev PSA phase sync failed with status {exc.response.status_code}"
+        try:
+            body = exc.response.json()
+            detail = body.get("message") or body.get("error") or detail
+        except ValueError:
+            pass
+        project.revio_sync_status = "Phase Sync Failed"
+        project.revio_sync_error = str(detail)[:4000]
+        db.commit()
+        raise HTTPException(502, detail)
+    except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
+        project.revio_sync_status = "Phase Sync Failed"
         project.revio_sync_error = str(exc)[:4000]
         db.commit()
         raise HTTPException(502, str(exc))
