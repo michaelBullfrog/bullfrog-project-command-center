@@ -242,9 +242,15 @@ def work_item_assignee(project: Project, owner_role: str) -> str | None:
         return project.sales_owner or project.technical_manager
     return project.engineer or project.technical_manager
 
-def project_work_owner_role(phase_name: str) -> str:
-    normalized = (phase_name or "").strip().casefold()
-    return "engineer" if ("design" in normalized or "discover" in normalized) else "csm"
+def project_work_owner_role(phase_name: str, item_name: str = "") -> str:
+    normalized_phase = (phase_name or "").strip().casefold()
+    normalized_item = (item_name or "").strip().casefold()
+    engineer_phase = any(
+        keyword in normalized_phase
+        for keyword in ("design", "discover", "number port")
+    )
+    engineer_item = "configure users and devices" in normalized_item
+    return "engineer" if engineer_phase or engineer_item else "csm"
 
 def project_work_template_key(definition: dict) -> str:
     raw = f"{definition['phase']}::{definition['item_type']}::{definition['name']}"
@@ -258,7 +264,7 @@ def add_project_work_items(db: Session, project: Project):
     }
     for definition in project_work_definitions(project.project_type, db):
         template_key = project_work_template_key(definition)
-        owner_role = project_work_owner_role(definition["phase"])
+        owner_role = project_work_owner_role(definition["phase"], definition["name"])
         assignee = work_item_assignee(project, owner_role)
         current = existing.get(template_key)
         if current:
@@ -1080,13 +1086,22 @@ async def revio_create_work_ticket(project: Project, item: ProjectWorkItem) -> s
 async def revio_update_work_ticket_assignment(
     project: Project, item: ProjectWorkItem, ticket_id: str
 ):
-    path_template = os.getenv(
-        "REVIO_PSA_TICKET_UPDATE_PATH", "/psac/api/v1/ticket/{ticket_id}"
+    assignee = item.assignee_name or work_item_assignee(project, item.owner_role)
+    if not assignee or assignee not in PSA_USERS:
+        raise RuntimeError(f"{item.name} does not have a mapped Rev PSA Primary Tech")
+    normalized_ticket = int(ticket_id) if str(ticket_id).isdigit() else str(ticket_id)
+    path = os.getenv(
+        "REVIO_PSA_TICKET_BULK_TECH_PATH",
+        "/psac/api/v1/tickets/bulk/technician",
     )
     return await revio_psa_api_request(
         "PUT",
-        path_template.format(ticket_id=quote(str(ticket_id), safe="")),
-        json_body=revio_work_ticket_payload(project, item),
+        path,
+        json_body={
+            "ticketIds": [normalized_ticket],
+            "primaryTechId": PSA_USERS[assignee],
+            "associatedTechIds": [],
+        },
     )
 
 async def revio_onboarding_board_id() -> str:
@@ -1169,7 +1184,7 @@ async def sync_project_work_items(project: Project, db: Session) -> dict:
     board_updated = board_failed = 0
     errors: list[str] = []
     for item in work_items:
-        owner_role = project_work_owner_role(item.phase_name)
+        owner_role = project_work_owner_role(item.phase_name, item.name)
         item.owner_role = owner_role
         item.assignee_name = work_item_assignee(project, owner_role)
         routing_warnings: list[str] = []
