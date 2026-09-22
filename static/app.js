@@ -206,7 +206,7 @@ $("#project-form").onsubmit=async e=>{
  delete d.create_in_revio;
  d.is_billable=f.elements.is_billable.checked;
  ["start_date","target_date","next_action_due"].forEach(k=>{if(!d[k])delete d[k]});
- ["revio_project_status_id","revio_project_priority_id","project_budget","budget_hours","estimated_hours"].forEach(k=>{if(d[k]==="")delete d[k];else d[k]=Number(d[k])});
+ ["revio_project_status_id","revio_project_priority_id","budget_hours","estimated_hours"].forEach(k=>{if(d[k]==="")delete d[k];else d[k]=Number(d[k])});
  const statusEl=$("#revio-project-status");
  if(createInRevio&&!d.revio_project_status_id){
   statusEl.textContent="Select a Rev PSA Project Status before creating the Rev PSA project.";
