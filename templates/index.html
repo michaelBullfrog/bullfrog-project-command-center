@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Bullfrog Project Command Center</title>
-  <link rel="stylesheet" href="/static/styles.css?v=1.8.0">
+  <link rel="stylesheet" href="/static/styles.css?v=1.9.0">
 </head>
 <body>
   <aside class="sidebar">
@@ -80,7 +80,10 @@
           </label>
           <label>Project name*<input name="project_name" required></label>
           <label>Project type<select name="project_type"></select></label>
+          <label>Project start<input name="start_date" type="date"></label>
           <label>Target go-live<input name="target_date" type="date"></label>
+          <label>Rev PSA Project Status<select name="revio_project_status_id"><option value="">Loading Rev PSA options…</option></select></label>
+          <label>Rev PSA Project Priority<select name="revio_project_priority_id"><option value="">No Rev PSA priority</option></select></label>
           <label>Customer Success Manager<select name="technical_manager"></select></label>
           <label>Assigned Engineer<select name="engineer"></select></label>
           <label>Sales Owner<select name="sales_owner"></select></label>
@@ -90,7 +93,14 @@
           <label>Next Action Owner<select name="next_action_owner"></select></label>
           <label>Next action due<input name="next_action_due" type="date"></label>
           <label class="span-2">Next action<input name="next_action"></label>
-          <label class="span-2">Scope<textarea name="scope" rows="3"></textarea></label>
+          <label>Project budget<input name="project_budget" type="number" min="0" step="0.01" placeholder="0.00"></label>
+          <label>Budget hours<input name="budget_hours" type="number" min="0" step="0.25" placeholder="0"></label>
+          <label>Estimated hours<input name="estimated_hours" type="number" min="0" step="0.25" placeholder="0"></label>
+          <label class="check form-check"><input name="is_billable" type="checkbox" checked> Billable project</label>
+          <label class="span-2">Scope / Rev PSA Project Description<textarea name="scope" rows="3"></textarea></label>
+          <label class="span-2">Rev PSA Project Notes<textarea name="project_notes" rows="2"></textarea></label>
+          <label class="span-2 check form-check" id="create-revio-row"><input name="create_in_revio" type="checkbox" checked> Create the project and its milestones in Rev PSA after saving</label>
+          <span class="lookup-status span-2" id="revio-project-status"></span>
         </div>
         <div class="form-actions"><button type="button" class="secondary" data-close="project-modal">Cancel</button><button class="primary" type="submit">Save Project</button></div>
       </form>
@@ -101,6 +111,6 @@
     <div class="modal-card detail-card"><button class="modal-close" data-close="detail-modal">×</button><div id="project-detail"></div></div>
   </div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=1.8.0"></script>
+  <script src="/static/app.js?v=1.9.0"></script>
 </body>
 </html>
