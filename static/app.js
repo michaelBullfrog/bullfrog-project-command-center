@@ -1,4 +1,4 @@
-const state={projects:[],intake:[],intakeError:null,options:{},revioProjectOptions:{statuses:[],priorities:[],member_roles:[]},revioProjectOptionsError:null,view:"dashboard",detailId:null};
+const state={projects:[],intake:[],templates:[],intakeError:null,options:{},revioProjectOptions:{statuses:[],priorities:[],member_roles:[]},revioProjectOptionsError:null,view:"dashboard",detailId:null};
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const fmtDate=v=>v?new Date(v+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"Not set";
 const daysUntil=v=>v?Math.ceil((new Date(v+"T23:59:59")-new Date())/86400000):null;
@@ -14,18 +14,19 @@ function isOverdue(p){return p.next_action_due&&daysUntil(p.next_action_due)<0&&
 function needsAttention(p){return p.stage!=="Complete"&&(p.risk!=="Green"||isOverdue(p))}
 function row(p,compact=false){return '<tr data-id="'+p.id+'"><td><div class="item-title">'+safe(p.customer)+'</div><div class="item-sub">'+safe(p.project_name)+'</div></td>'+(compact?'<td>'+safe(p.project_type)+'</td>':'')+'<td>'+safe(p.engineer||"Unassigned")+'</td><td><span class="badge stage">'+safe(p.stage)+'</span></td><td>'+badge(p.risk)+'</td><td>'+fmtDate(p.target_date)+'</td><td><div>'+safe(p.next_action||"No next action")+'</div><div class="item-sub">'+safe(p.next_action_owner||"Unassigned")+'</div></td></tr>'}
 async function load(){
- const [options,projects,revioOptions]=await Promise.all([
+ const [options,projects,templates,revioOptions]=await Promise.all([
   api("/api/options"),
   api("/api/projects"),
+  api("/api/project-templates"),
   api("/api/revio/projects/options").catch(e=>({error:e.message,statuses:[],priorities:[],member_roles:[]}))
  ]);
- state.options=options;state.projects=projects;
+ state.options=options;state.projects=projects;state.templates=templates;
  if(revioOptions.error){state.revioProjectOptionsError=revioOptions.error}else{state.revioProjectOptions=revioOptions}
  fillOptions();renderAll()
 }
 function fillOptions(){
- const maps=[["filter-stage",state.options.stages],["filter-risk",state.options.risks],["filter-type",state.options.project_types]];
- maps.forEach(([id,vals])=>{const el=$("#"+id);vals.forEach(v=>el.insertAdjacentHTML("beforeend",'<option>'+safe(v)+'</option>'))});
+ const maps=[["filter-stage","All stages",state.options.stages],["filter-risk","All risks",state.options.risks],["filter-type","All types",state.options.project_types]];
+ maps.forEach(([id,label,vals])=>{const el=$("#"+id),current=el.value;el.innerHTML='<option value="">'+label+'</option>'+vals.map(v=>'<option>'+safe(v)+'</option>').join("");if(vals.includes(current))el.value=current});
  const form=$("#project-form");
  [
   ["project_type",state.options.project_types,false,""],
@@ -47,7 +48,7 @@ function fillOptions(){
   $("#revio-project-status").className="lookup-status span-2 error";
  }
 }
-function renderAll(){renderDashboard();renderProjects();renderTeam();bindRows()}
+function renderAll(){renderDashboard();renderProjects();renderTeam();renderTemplates();bindRows()}
 function renderDashboard(){
  const list=active(), reds=list.filter(p=>p.risk==="Red").length, yellows=list.filter(p=>p.risk==="Yellow").length;
  const overdue=list.filter(isOverdue).length;
@@ -89,9 +90,30 @@ function renderTeam(){
  const groups={};active().forEach(p=>{const n=p.engineer||"Unassigned";(groups[n]??=[]).push(p)});
  $("#team-grid").innerHTML=Object.entries(groups).sort().map(([name,items])=>'<article class="team-card"><h3>'+safe(name)+'</h3><div class="item-sub">Active project workload</div><div class="team-stats"><div><strong>'+items.length+'</strong><span class="small">Active</span></div><div><strong>'+items.filter(needsAttention).length+'</strong><span class="small">Attention</span></div><div><strong>'+items.filter(isOverdue).length+'</strong><span class="small">Overdue</span></div></div>'+items.slice(0,5).map(p=>'<div class="team-project" data-id="'+p.id+'"><div class="item-title">'+safe(p.customer)+'</div><div class="item-sub">'+safe(p.stage)+' · '+p.risk+'</div></div>').join("")+'</article>').join("")||'<div class="empty">No active assignments.</div>'
 }
-function bindRows(){$$("[data-id]").forEach(el=>el.onclick=()=>openDetail(Number(el.dataset.id)))}
+function renderTemplates(){
+ const el=$("#template-list");if(!el)return;
+ el.innerHTML=state.templates.length?state.templates.map(t=>'<article class="template-card"><div class="template-card-head"><div><h3>'+safe(t.name)+'</h3><p>'+safe(t.description||"Custom Bullfrog project workflow")+'</p></div><div class="template-card-actions"><button class="secondary" data-edit-template="'+t.id+'">Edit</button><button class="secondary danger" data-delete-template="'+t.id+'">Delete</button></div></div><div class="template-phase-summary">'+t.phases.map((phase,i)=>'<div><span>'+(i+1)+'</span><strong>'+safe(phase.name)+'</strong><small>'+safe(({csm:"Customer Success Manager",engineer:"Engineer",sales:"Sales"})[phase.owner_role]||phase.owner_role)+' · '+phase.milestones.length+' milestone'+(phase.milestones.length===1?"":"s")+'</small></div>').join("")+'</div></article>').join(""):'<div class="empty template-empty"><strong>No custom project types yet.</strong><span>Add one to build a reusable phase and milestone workflow.</span></div>';
+ $("[data-edit-template]").forEach(x=>x.onclick=()=>openTemplateForm(state.templates.find(t=>t.id===Number(x.dataset.editTemplate))));
+ $("[data-delete-template]").forEach(x=>x.onclick=async()=>{const item=state.templates.find(t=>t.id===Number(x.dataset.deleteTemplate));if(!item||!confirm("Delete the custom project type "+item.name+"?"))return;try{await api("/api/project-templates/"+item.id,{method:"DELETE"});await refreshTemplates();toast("Project type deleted")}catch(e){toast(e.message)}});
+}
+function addTemplatePhase(phase={}){
+ const editor=document.createElement("article");editor.className="template-phase-editor";
+ const milestones=(phase.milestones||[]).join("\n");
+ editor.innerHTML='<div class="template-phase-top"><span class="phase-order"></span><label>Phase name*<input class="template-phase-name" maxlength="120" required value="'+safe(phase.name||"")+'" placeholder="Example: Discovery"></label><label>Default owner<select class="template-phase-owner"><option value="csm">Customer Success Manager</option><option value="engineer">Engineer</option><option value="sales">Sales</option></select></label><button type="button" class="icon-danger remove-template-phase" title="Remove phase">×</button></div><label>Milestones* <span class="label-help">one per line, in order</span><textarea class="template-phase-milestones" rows="5" required placeholder="Kickoff Call\nRequirements Complete\nDesign Approved">'+safe(milestones)+'</textarea></label>';
+ editor.querySelector(".template-phase-owner").value=phase.owner_role||"engineer";
+ editor.querySelector(".remove-template-phase").onclick=()=>{editor.remove();renumberTemplatePhases()};
+ $("#phase-builder").appendChild(editor);renumberTemplatePhases()
+}
+function renumberTemplatePhases(){$(".template-phase-editor").forEach((x,i)=>x.querySelector(".phase-order").textContent="Phase "+(i+1))}
+function openTemplateForm(template=null){
+ const form=$("#template-form");form.reset();$("#template-id").value=template?.id||"";$("#template-form-title").textContent=template?"Edit Project Type":"New Project Type";form.elements.name.value=template?.name||"";form.elements.description.value=template?.description||"";$("#phase-builder").innerHTML="";(template?.phases?.length?template.phases:[{name:"Planning & Handoff",owner_role:"csm",milestones:["Signed Proposal","Internal Handoff","Kickoff Call"]}]).forEach(addTemplatePhase);$("#template-modal").classList.remove("hidden")
+}
+async function refreshTemplates(){
+ const [templates,options]=await Promise.all([api("/api/project-templates"),api("/api/options")]);state.templates=templates;state.options=options;fillOptions();renderTemplates();renderProjects()
+}
+function bindRows(){$("[data-id]").forEach(el=>el.onclick=()=>openDetail(Number(el.dataset.id)))}
 async function loadIntake(){try{state.intake=await api("/api/intake");state.intakeError=null}catch(e){console.error("Project intake:",e);state.intake=[];state.intakeError=e.message}renderIntake()}
-function setView(name){state.view=name;$$(".view").forEach(v=>v.classList.add("hidden"));const target=$("#"+name+"-view");if(!target){toast("This view is not available. Please refresh the page.");return}target.classList.remove("hidden");$$(".nav-link").forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",intake:"Project Intake",team:"Team View"}[name];if(name==="intake")loadIntake()}
+function setView(name){state.view=name;$$(".view").forEach(v=>v.classList.add("hidden"));const target=$("#"+name+"-view");if(!target){toast("This view is not available. Please refresh the page.");return}target.classList.remove("hidden");$$(".nav-link").forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",intake:"Project Intake",team:"Team View",templates:"Project Types"}[name];if(name==="intake")loadIntake()}
 function resetQuoteOptions(selectedId=""){
  const select=$("#quote-id-select"),statusEl=$("#quote-lookup-status");select.replaceChildren(new Option(selectedId?"Previously selected Rev.io source "+selectedId:"Search the customer to load quotes, bills, and charges",selectedId||""));select.disabled=true;statusEl.textContent="";statusEl.className="lookup-status";
 }
@@ -171,7 +193,9 @@ async function openDetail(id,initialTab="milestones"){
 function close(id){$("#"+id).classList.add("hidden")}
 async function refresh(){state.projects=await api("/api/projects");try{state.intake=await api("/api/intake");state.intakeError=null}catch(e){console.error("Project intake:",e);state.intake=[];state.intakeError=e.message}renderAll()}
 $("#project-form").onsubmit=async e=>{e.preventDefault();const f=e.target,d=Object.fromEntries(new FormData(f));const createInRevio=f.elements.create_in_revio.checked;delete d.create_in_revio;d.is_billable=f.elements.is_billable.checked;["start_date","target_date","next_action_due"].forEach(k=>{if(!d[k])delete d[k]});["revio_project_status_id","revio_project_priority_id","project_budget","budget_hours","estimated_hours"].forEach(k=>{if(d[k]==="")delete d[k];else d[k]=Number(d[k])});if(createInRevio&&!d.revio_project_status_id){$("#revio-project-status").textContent="Select a Rev PSA Project Status before creating the Rev PSA project.";$("#revio-project-status").className="lookup-status span-2 error";return}const id=$("#project-id").value,intakeId=$("#intake-id").value;const url=intakeId?"/api/intake/"+intakeId+"/convert":id?"/api/projects/"+id:"/api/projects";const body=intakeId?{project:d}:d;const saved=await api(url,{method:id?"PUT":"POST",body:JSON.stringify(body)});let revioMessage="";if(id&&saved.revio_project_id){try{const synced=await api("/api/projects/"+saved.id+"/revio/sync",{method:"PUT"});revioMessage=synced.project_hours!=null?" Rev PSA updated to "+synced.project_hours+" project hours.":" Rev PSA project updated."}catch(err){revioMessage=" Bullfrog project saved, but Rev PSA update failed: "+err.message}}if(createInRevio&&!saved.revio_project_id){try{const result=await api("/api/projects/"+saved.id+"/revio/create",{method:"POST"});revioMessage=" Rev PSA Project "+result.revio_project_id+" created with "+result.phases_created+" phases and "+result.milestones_created+" milestones."}catch(err){revioMessage=" Bullfrog project saved, but Rev PSA creation failed: "+err.message}}close("project-modal");await refresh();if(intakeId)setView("projects");toast((id?"Project updated":intakeId?"Intake converted to project":"Project created")+revioMessage)};
-$$(".nav-link").forEach(n=>n.onclick=()=>setView(n.dataset.view));$$("[data-go]").forEach(n=>n.onclick=()=>setView(n.dataset.go));
+$("#template-form").onsubmit=async e=>{e.preventDefault();const phases=$(".template-phase-editor").map(editor=>({name:editor.querySelector(".template-phase-name").value.trim(),owner_role:editor.querySelector(".template-phase-owner").value,milestones:editor.querySelector(".template-phase-milestones").value.split("\n").map(v=>v.trim()).filter(Boolean)}));if(!phases.length){toast("Add at least one phase");return}const form=e.target,payload={name:form.elements.name.value.trim(),description:form.elements.description.value.trim()||null,phases},id=$("#template-id").value;try{await api(id?"/api/project-templates/"+id:"/api/project-templates",{method:id?"PUT":"POST",body:JSON.stringify(payload)});close("template-modal");await refreshTemplates();toast(id?"Project type updated":"Project type created")}catch(err){toast(err.message)}};
+$("#new-template").onclick=()=>openTemplateForm();$("#add-template-phase").onclick=()=>addTemplatePhase();
+$(".nav-link").forEach(n=>n.onclick=()=>setView(n.dataset.view));$("[data-go]").forEach(n=>n.onclick=()=>setView(n.dataset.go));
 $("#lookup-customer").onclick=async()=>{const form=$("#project-form"),customerId=form.elements.customer_id.value.trim(),button=$("#lookup-customer"),statusEl=$("#customer-lookup-status");if(!/^\d+$/.test(customerId)){statusEl.textContent="Enter a numeric Customer ID first.";statusEl.className="lookup-status error";return}button.disabled=true;button.textContent="Searching…";statusEl.textContent="";resetQuoteOptions();try{const result=await api("/api/revio/customers/"+encodeURIComponent(customerId));form.elements.customer.value=result.customer_name;statusEl.textContent="✓ Customer found: "+result.customer_name;statusEl.className="lookup-status success";button.textContent="Loading quotes…";await loadSignedQuotes(result.customer_name);form.elements.quote_id.focus()}catch(e){statusEl.textContent=e.message;statusEl.className="lookup-status error"}finally{button.disabled=false;button.textContent="Search Rev PSA"}};
 $("#sync-intake").onclick=async()=>{const button=$("#sync-intake");button.disabled=true;button.textContent="Syncing…";try{const result=await api("/api/graph/sync",{method:"POST"});await loadIntake();toast(result.imported?result.imported+" email(s) added to Project Intake":"Inbox is already up to date")}catch(e){toast("Inbox sync failed: "+e.message)}finally{button.disabled=false;button.textContent="↻ Sync Inbox"}};
 ["header-new","sidebar-new"].forEach(id=>$("#"+id).onclick=()=>openForm());$$("[data-close]").forEach(x=>x.onclick=()=>close(x.dataset.close));
