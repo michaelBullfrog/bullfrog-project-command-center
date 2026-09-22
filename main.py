@@ -1086,9 +1086,14 @@ async def sync_project_work_items(project: Project, db: Session) -> dict:
         raise RuntimeError("Create the Rev PSA project before syncing work")
     add_project_work_items(db, project)
     db.flush()
+    work_items = list(db.scalars(
+        select(ProjectWorkItem)
+        .where(ProjectWorkItem.project_id == project.id)
+        .order_by(ProjectWorkItem.id)
+    ).all())
     created = linked = already_linked = pending_tasks = failed = 0
     errors: list[str] = []
-    for item in project.work_items:
+    for item in work_items:
         if item.revio_work_item_id:
             already_linked += 1
             continue
