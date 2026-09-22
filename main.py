@@ -580,6 +580,41 @@ def revio_role_id(roles: list[dict], *terms: str) -> int | None:
                 return int(role["id"])
     return None
 
+async def revio_update_project_details(project: Project) -> dict:
+    if not project.revio_project_id:
+        raise RuntimeError("This Bullfrog project is not linked to a Rev PSA project")
+    if not (project.customer_id or "").isdigit():
+        raise RuntimeError("A numeric Rev PSA Customer ID is required")
+    project_hours = project.estimated_hours if project.estimated_hours is not None else project.budget_hours
+    payload = {
+        "projectName": project.project_name,
+        "projectDescription": project.scope,
+        "projectStatusId": project.revio_project_status_id,
+        "projectPriorityId": project.revio_project_priority_id,
+        "startDate": revio_datetime(project.start_date),
+        "endDate": revio_datetime(project.target_date),
+        "projectBudget": project.project_budget,
+        "budgetHours": project_hours,
+        "estimatedHours": project_hours,
+        "isBillable": bool(project.is_billable),
+        "projectOwnerId": PSA_USERS.get(project.technical_manager),
+        "customerId": int(project.customer_id),
+        "isAtRisk": project.risk == "Red",
+        "notes": project.project_notes,
+    }
+    payload = {key: value for key, value in payload.items() if value is not None}
+    response = await revio_project_api_request(
+        "PUT",
+        f"/project-management/api/v1/projects/{quote(str(project.revio_project_id), safe='')}",
+        json_body=payload,
+    )
+    return {
+        "revio_project_id": project.revio_project_id,
+        "project_hours": project_hours,
+        "updated": True,
+        "response": response,
+    }
+
 def revio_phase_owner(project: Project, owner_role: str) -> str | None:
     if owner_role == "csm":
         return PSA_USERS.get(project.technical_manager)
@@ -643,7 +678,7 @@ async def revio_sync_project_phases(project: Project, db: Session) -> dict:
                 "description": f"{phase_name} phase for {project.project_name}",
                 "phaseOwnerId": owner_id,
                 "budgetAllocation": (project.project_budget / total_phases) if project.project_budget is not None else None,
-                "plannedHours": (project.budget_hours / total_phases) if project.budget_hours is not None else None,
+                "plannedHours": (((project.estimated_hours if project.estimated_hours is not None else project.budget_hours) / total_phases) if (project.estimated_hours is not None or project.budget_hours is not None) else None),
                 "isAtRisk": project.risk == "Red",
                 "progressPercent": progress,
                 "baselineStartDate": revio_datetime(phase_start),
@@ -754,11 +789,12 @@ async def revio_create_project_with_milestones(project: Project, db: Session) ->
         "teamMembers": team_members or None,
         "notes": project.project_notes,
     }
+    project_hours = project.estimated_hours if project.estimated_hours is not None else project.budget_hours
     optional_values = {
         "endDate": revio_datetime(project.target_date),
         "projectBudget": project.project_budget,
-        "budgetHours": project.budget_hours,
-        "estimatedHours": project.estimated_hours,
+        "budgetHours": project_hours,
+        "estimatedHours": project_hours,
         "projectPriorityId": project.revio_project_priority_id,
     }
     payload.update({key: value for key, value in optional_values.items() if value is not None})
@@ -2157,6 +2193,40 @@ async def create_revio_project(project_id: int, request: Request, db: Session = 
         raise HTTPException(502, detail)
     except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
         project.revio_sync_status = "Failed"
+        project.revio_sync_error = str(exc)[:4000]
+        db.commit()
+        raise HTTPException(502, str(exc))
+
+@app.put("/api/projects/{project_id}/revio/sync")
+async def sync_revio_project(project_id: int, request: Request, db: Session = Depends(get_db)):
+    project = db.scalar(project_query().where(Project.id == project_id))
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if not project.revio_project_id:
+        raise HTTPException(409, "This project has not been created in Rev PSA")
+    try:
+        result = await revio_update_project_details(project)
+        project.revio_sync_status = "Synced with Phases" if all(item.revio_phase_id for item in project.milestones) else "Synced"
+        project.revio_sync_error = None
+        project.revio_synced_at = datetime.utcnow()
+        record_activity(
+            db, project.id, request, "revio_project_updated",
+            f"Updated Rev PSA Project {project.revio_project_id}"
+            + (f" with {result['project_hours']} project hours" if result["project_hours"] is not None else ""),
+        )
+        db.commit()
+        return result
+    except httpx.HTTPStatusError as exc:
+        detail = f"Rev PSA project update failed with status {exc.response.status_code}"
+        try:
+            body = exc.response.json()
+            detail = body.get("message") or body.get("error") or detail
+        except ValueError:
+            pass
+        project.revio_sync_error = str(detail)[:4000]
+        db.commit()
+        raise HTTPException(502, detail)
+    except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
         project.revio_sync_error = str(exc)[:4000]
         db.commit()
         raise HTTPException(502, str(exc))
