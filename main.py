@@ -1084,16 +1084,53 @@ async def revio_create_work_ticket(project: Project, item: ProjectWorkItem) -> s
         raise RuntimeError("Rev PSA created the ticket but did not return a ticket ID")
     return str(ticket_id)
 
+
+def revio_work_task_dates(project: Project, item: ProjectWorkItem) -> tuple[str, str]:
+    """Return the required Rev PSA task window as UTC ISO-8601 timestamps."""
+    timezone_name = os.getenv("REVIO_PSA_TASK_TIMEZONE", "America/New_York").strip()
+    try:
+        local_timezone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        local_timezone = timezone.utc
+
+    today = datetime.now(local_timezone).date()
+    start_day = project.start_date or today
+    if start_day < today:
+        start_day = today
+
+    try:
+        start_hour = int(os.getenv("REVIO_PSA_TASK_START_HOUR", "9").strip())
+    except ValueError:
+        start_hour = 9
+    start_hour = min(23, max(0, start_hour))
+
+    start_local = datetime.combine(
+        start_day,
+        datetime.min.time(),
+        tzinfo=local_timezone,
+    ).replace(hour=start_hour)
+    duration_hours = max(0.25, float(item.estimated_hours or 1.0))
+    end_local = start_local + timedelta(hours=duration_hours)
+
+    def utc_timestamp(value: datetime) -> str:
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    return utc_timestamp(start_local), utc_timestamp(end_local)
+
+
 def revio_work_task_payload(project: Project, item: ProjectWorkItem) -> dict:
     if not (project.customer_id or "").isdigit():
         raise RuntimeError("A numeric Rev PSA Customer ID is required")
     assignee = item.assignee_name or work_item_assignee(project, item.owner_role)
     if not assignee or assignee not in PSA_USERS:
         raise RuntimeError(f"{item.name} does not have a mapped Rev PSA assignee")
+    start_date, end_date = revio_work_task_dates(project, item)
     payload = {
         "subject": f"{project.customer} — {item.name}",
         "customerId": int(project.customer_id),
         "allDayEvent": False,
+        "startDate": start_date,
+        "endDate": end_date,
         "private": False,
         "completedFlag": False,
         "attendees": [{"globalUserId": PSA_USERS[assignee]}],
