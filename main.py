@@ -123,7 +123,7 @@ PHASE_TEMPLATES = {
 
 WORK_ITEM_TEMPLATES = {
     "Webex Calling": [
-        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review signed scope, ownership, dependencies, and target dates with the Bullfrog delivery team."},
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "sales", "hours": 1.0, "description": "Review signed scope, ownership, dependencies, and target dates with the Bullfrog delivery team."},
         {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Hold the customer kickoff and confirm contacts, scope, schedule, and required inputs."},
         {"phase": "Design & Discovery", "name": "Calling Design and Call Flow", "item_type": "Ticket", "owner": "engineer", "hours": 3.0, "description": "Document dial plan, calling features, auto attendants, queues, hours, caller ID, and emergency calling requirements."},
         {"phase": "Design & Discovery", "name": "Collect User and Porting Documents", "item_type": "Ticket", "owner": "csm", "hours": 1.5, "description": "Collect and validate the user spreadsheet, number inventory, LOA, CSR, and customer approvals."},
@@ -136,7 +136,7 @@ WORK_ITEM_TEMPLATES = {
         {"phase": "Go Live & Closeout", "name": "Documentation and Closeout", "item_type": "Ticket", "owner": "csm", "hours": 1.0, "description": "Complete documentation, acceptance, handoff, and project closeout."},
     ],
     "Webex Contact Center": [
-        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review scope, ownership, integrations, dependencies, and target dates."},
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "sales", "hours": 1.0, "description": "Review scope, ownership, integrations, dependencies, and target dates."},
         {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Confirm project scope, contacts, schedule, and required discovery inputs."},
         {"phase": "Design", "name": "Contact Center Discovery and Call Flow", "item_type": "Ticket", "owner": "engineer", "hours": 4.0, "description": "Document entry points, queues, teams, routing, IVR, hours, recording, and reporting requirements."},
         {"phase": "Build & Integration", "name": "Build Contact Center Configuration", "item_type": "Ticket", "owner": "engineer", "hours": 8.0, "description": "Configure users, agents, teams, queues, routing flows, desktop profiles, and required integrations."},
@@ -147,7 +147,7 @@ WORK_ITEM_TEMPLATES = {
         {"phase": "Go Live & Closeout", "name": "Documentation and Closeout", "item_type": "Ticket", "owner": "csm", "hours": 1.0, "description": "Complete documentation, acceptance, handoff, and closeout."},
     ],
     "Meraki": [
-        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review scope, hardware, dependencies, and installation targets."},
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "sales", "hours": 1.0, "description": "Review scope, hardware, dependencies, and installation targets."},
         {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Confirm contacts, topology, schedule, access, and required inputs."},
         {"phase": "Hardware", "name": "Order and Track Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order approved hardware and record shipment and tracking details."},
         {"phase": "Design & Configuration", "name": "Network Design and Configuration", "item_type": "Ticket", "owner": "engineer", "hours": 5.0, "description": "Complete topology, VLAN, addressing, firewall, VPN, switching, and wireless configuration."},
@@ -158,7 +158,7 @@ WORK_ITEM_TEMPLATES = {
         {"phase": "Closeout", "name": "Project Closeout", "item_type": "Ticket", "owner": "csm", "hours": 1.0, "description": "Complete acceptance, internal handoff, and closeout."},
     ],
     "Network": [
-        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review scope, hardware, dependencies, and installation targets."},
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "sales", "hours": 1.0, "description": "Review scope, hardware, dependencies, and installation targets."},
         {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Confirm contacts, topology, schedule, access, and required inputs."},
         {"phase": "Hardware", "name": "Order and Track Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order approved hardware and record shipment and tracking details."},
         {"phase": "Design & Configuration", "name": "Network Design and Configuration", "item_type": "Ticket", "owner": "engineer", "hours": 5.0, "description": "Complete network design, addressing, security, switching, wireless, and configuration work."},
@@ -168,7 +168,7 @@ WORK_ITEM_TEMPLATES = {
         {"phase": "Closeout", "name": "Project Closeout", "item_type": "Ticket", "owner": "csm", "hours": 1.0, "description": "Complete acceptance, internal handoff, and closeout."},
     ],
     "Other": [
-        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review scope, ownership, dependencies, and target dates."},
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "sales", "hours": 1.0, "description": "Review scope, ownership, dependencies, and target dates."},
         {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Confirm customer contacts, scope, schedule, and inputs."},
         {"phase": "Delivery", "name": "Project Delivery Work", "item_type": "Ticket", "owner": "engineer", "hours": 4.0, "description": "Complete the technical implementation and testing work."},
         {"phase": "Closeout", "name": "Customer Follow-Up", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review the completed work with the customer."},
@@ -246,6 +246,8 @@ def work_item_assignee(project: Project, owner_role: str) -> str | None:
 def project_work_owner_role(phase_name: str, item_name: str = "") -> str:
     normalized_phase = (phase_name or "").strip().casefold()
     normalized_item = (item_name or "").strip().casefold()
+    if "internal handoff" in normalized_item:
+        return "sales"
     engineer_phase = any(
         keyword in normalized_phase
         for keyword in ("design", "discover", "number port")
