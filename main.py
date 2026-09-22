@@ -1084,6 +1084,49 @@ async def revio_create_work_ticket(project: Project, item: ProjectWorkItem) -> s
         raise RuntimeError("Rev PSA created the ticket but did not return a ticket ID")
     return str(ticket_id)
 
+def revio_work_task_payload(project: Project, item: ProjectWorkItem) -> dict:
+    if not (project.customer_id or "").isdigit():
+        raise RuntimeError("A numeric Rev PSA Customer ID is required")
+    assignee = item.assignee_name or work_item_assignee(project, item.owner_role)
+    if not assignee or assignee not in PSA_USERS:
+        raise RuntimeError(f"{item.name} does not have a mapped Rev PSA assignee")
+    payload = {
+        "subject": f"{project.customer} — {item.name}",
+        "customerId": int(project.customer_id),
+        "allDayEvent": False,
+        "private": False,
+        "completedFlag": False,
+        "attendees": [{"globalUserId": PSA_USERS[assignee]}],
+        "writeDispatchChangeLog": True,
+    }
+    optional_ids = {
+        "calendarItemTypeId": "REVIO_PSA_CALENDAR_ITEM_TYPE_ID",
+        "calendarItemActionId": "REVIO_PSA_CALENDAR_ITEM_ACTION_ID",
+        "calendarItemPriorityId": "REVIO_PSA_CALENDAR_ITEM_PRIORITY_ID",
+    }
+    for field, env_name in optional_ids.items():
+        configured = os.getenv(env_name, "").strip()
+        if configured:
+            payload[field] = int(configured) if configured.isdigit() else configured
+    return payload
+
+async def revio_create_work_task(project: Project, item: ProjectWorkItem) -> str:
+    path = os.getenv("REVIO_PSA_CALENDAR_CREATE_PATH", "/psac/api/v1/calendarItem")
+    response = await revio_psa_api_request(
+        "POST", path, json_body=revio_work_task_payload(project, item)
+    )
+    data = response.get("data", response)
+    calendar_item_id = revio_value(
+        data, "calendarItemId", "calendar_item_id", "calendarId", "id"
+    ) if isinstance(data, dict) else None
+    if calendar_item_id in (None, ""):
+        calendar_item_id = revio_value(
+            response, "calendarItemId", "calendar_item_id", "calendarId", "id"
+        )
+    if calendar_item_id in (None, ""):
+        raise RuntimeError("Rev PSA created the task but did not return a Calendar Item ID")
+    return str(calendar_item_id)
+
 async def revio_update_work_ticket_assignment(
     project: Project, item: ProjectWorkItem, ticket_id: str
 ):
@@ -1193,13 +1236,12 @@ async def sync_project_work_items(project: Project, db: Session) -> dict:
             phase_id = revio_work_phase_id(project, item)
             item.revio_phase_id = phase_id
             external_id = item.revio_item_id
-            if item.item_type == "Task" and not external_id:
-                item.status = "Needs Scheduling"
-                item.sync_error = None
-                pending_tasks += 1
-                continue
             if not external_id:
-                external_id = await revio_create_work_ticket(project, item)
+                external_id = (
+                    await revio_create_work_task(project, item)
+                    if item.item_type == "Task"
+                    else await revio_create_work_ticket(project, item)
+                )
                 item.revio_item_id = external_id
                 item.status = "Created"
                 created += 1
