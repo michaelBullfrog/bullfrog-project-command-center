@@ -3419,8 +3419,42 @@ def add_milestone(project_id: int, payload: MilestoneCreate, request: Request, d
     db.commit(); db.refresh(item)
     return item
 
+async def sync_revio_milestone_completion(
+    item: Milestone, project: Project, db: Session,
+) -> bool:
+    """Keep a linked Rev PSA milestone's completed state aligned with Bullfrog Projects."""
+    if not project.revio_project_id:
+        return False
+
+    # Milestones added after the Rev project was first created may not have a
+    # Rev ID yet. Sync the phase structure first so the completion update has a
+    # concrete Rev PSA milestone to target.
+    if not item.revio_milestone_id:
+        await revio_sync_project_phases(project, db)
+        db.flush()
+    if not item.revio_milestone_id:
+        raise RuntimeError(
+            f"Rev PSA milestone mapping is missing for {item.name}. Sync the project phases and try again."
+        )
+
+    milestone_id = quote(str(item.revio_milestone_id), safe="")
+    if item.status == "Complete":
+        await revio_project_api_request(
+            "PATCH",
+            f"/project-management/api/v1/milestones/{milestone_id}/complete",
+            json_body={"completedDate": revio_datetime(item.completed_date or date.today())},
+        )
+    else:
+        await revio_project_api_request(
+            "PATCH",
+            f"/project-management/api/v1/milestones/{milestone_id}/reopen",
+            json_body={},
+        )
+    return True
+
+
 @app.patch("/api/milestones/{milestone_id}", response_model=MilestoneOut)
-def update_milestone(
+async def update_milestone(
     milestone_id: int, payload: MilestoneUpdate, request: Request,
     background_tasks: BackgroundTasks, db: Session = Depends(get_db),
 ):
@@ -3432,15 +3466,36 @@ def update_milestone(
         setattr(item, key, value)
     item.completed_date = date.today() if item.status == "Complete" else None
     if old_status != item.status:
+        project = db.get(Project, item.project_id)
+        revio_completion_synced = False
+        if project and project.revio_project_id and (
+            item.status == "Complete" or old_status == "Complete"
+        ):
+            try:
+                revio_completion_synced = await sync_revio_milestone_completion(item, project, db)
+                project.revio_sync_error = None
+                project.revio_synced_at = datetime.utcnow()
+            except httpx.HTTPStatusError as exc:
+                db.rollback()
+                detail = revio_http_error_detail(
+                    exc,
+                    f"Rev PSA milestone update failed with status {exc.response.status_code}",
+                )
+                raise HTTPException(502, detail)
+            except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
+                db.rollback()
+                raise HTTPException(502, f"Rev PSA milestone update failed: {exc}")
+
         verb = "Completed" if item.status == "Complete" else "Changed status of"
         description = f"{verb} milestone {item.name}"
+        if revio_completion_synced:
+            description += " in Bullfrog Projects and Rev PSA"
         record_activity(db, item.project_id, request, "milestone_updated", description,
                         field_name="milestone_status", old_value=old_status, new_value=item.status)
 
         # Keep the project summary aligned with the milestone checklist. The
         # first incomplete milestone becomes the next action automatically.
         db.flush()
-        project = db.get(Project, item.project_id)
         next_milestone = db.scalar(
             select(Milestone)
             .where(Milestone.project_id == item.project_id, Milestone.status != "Complete")
