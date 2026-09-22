@@ -162,6 +162,7 @@ function openForm(project=null,intakeId=null){
   if(mediumPriority)f.elements.revio_project_priority_id.value=String(mediumPriority.id)
  }
  $("#create-revio-row").classList.toggle("hidden",!!project?.revio_project_id);
+ $("#project-attachments-row").classList.toggle("hidden",!!project);
  if(project?.revio_project_id){$("#revio-project-status").textContent="✓ Linked to Rev PSA Project "+project.revio_project_id;$("#revio-project-status").className="lookup-status span-2 success"}
  $("#project-modal").classList.remove("hidden");if(project?.customer)loadSignedQuotes(project.customer,project.quote_id||"")
 }
@@ -222,9 +223,11 @@ function close(id){$("#"+id).classList.add("hidden")}
 async function refresh(){state.projects=await api("/api/projects");try{state.intake=await api("/api/intake");state.intakeError=null}catch(e){console.error("Project intake:",e);state.intake=[];state.intakeError=e.message}renderAll()}
 $("#project-form").onsubmit=async e=>{
  e.preventDefault();
- const f=e.target,d=Object.fromEntries(new FormData(f));
+ const f=e.target,projectFiles=Array.from(f.elements.project_files?.files||[]);
+ const d=Object.fromEntries(new FormData(f));
  const createInRevio=f.elements.create_in_revio.checked;
  delete d.create_in_revio;
+ delete d.project_files;
  d.is_billable=f.elements.is_billable.checked;
  ["start_date","target_date","next_action_due"].forEach(k=>{if(!d[k])delete d[k]});
  ["revio_project_status_id","revio_project_priority_id","budget_hours","estimated_hours"].forEach(k=>{if(d[k]==="")delete d[k];else d[k]=Number(d[k])});
@@ -246,7 +249,19 @@ $("#project-form").onsubmit=async e=>{
  statusEl.className="lookup-status span-2 working";
  try{
   const saved=await api(url,{method:id?"PUT":"POST",body:JSON.stringify(body)});
-  let revioMessage="";
+  let revioMessage="",attachmentMessage="";
+  if(!id&&projectFiles.length){
+   statusEl.textContent="Project created. Adding "+projectFiles.length+" attachment(s) to Notes…";
+   const attachmentForm=new FormData();
+   attachmentForm.append("note","Project documents uploaded during project creation.");
+   projectFiles.forEach(file=>attachmentForm.append("files",file));
+   try{
+    await api("/api/projects/"+saved.id+"/notes",{method:"POST",body:attachmentForm});
+    attachmentMessage=" "+projectFiles.length+" attachment(s) added to Notes."
+   }catch(err){
+    attachmentMessage=" Project created, but attachments need attention: "+err.message
+   }
+  }
   if(id&&saved.revio_project_id){
    statusEl.textContent="Bullfrog project saved. Updating the linked Rev PSA project…";
    try{
@@ -266,7 +281,7 @@ $("#project-form").onsubmit=async e=>{
   await refresh();
   close("project-modal");
   if(intakeId)setView("projects");
-  toast((id?"Project updated":intakeId?"Intake converted to project":"Project created")+revioMessage)
+  toast((id?"Project updated":intakeId?"Intake converted to project":"Project created")+attachmentMessage+revioMessage)
  }catch(err){
   statusEl.textContent="Project save failed: "+err.message;
   statusEl.className="lookup-status span-2 error";
