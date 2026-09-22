@@ -56,6 +56,16 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan", order_by="ProjectActivity.created_at.desc()"
     )
 
+class CustomProjectTemplate(Base):
+    __tablename__ = "custom_project_templates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    phases_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
 class Milestone(Base):
     __tablename__ = "milestones"
 
