@@ -302,7 +302,7 @@ $("#lookup-customer").onclick=async()=>{const form=$("#project-form"),customerId
 $("#sync-intake").onclick=async()=>{const button=$("#sync-intake");button.disabled=true;button.textContent="Syncing…";try{const result=await api("/api/graph/sync",{method:"POST"});await loadIntake();toast(result.imported?result.imported+" email(s) added to Project Intake":"Inbox is already up to date")}catch(e){toast("Inbox sync failed: "+e.message)}finally{button.disabled=false;button.textContent="↻ Sync Inbox"}};
 const testNotifications=$("#test-notifications");
 if(testNotifications)testNotifications.onclick=async()=>{
- if(!confirm("Send test emails from michael@bullfrog.net to carrie@bullfrog.net and psanotification@bullfrog.net?"))return;
+ if(!confirm("Send test emails from projectintake@bullfrog.net to carrie@bullfrog.net and psanotification@bullfrog.net?"))return;
  const original=testNotifications.textContent;
  testNotifications.disabled=true;
  testNotifications.innerHTML='<span class="button-spinner"></span> Sending tests…';
