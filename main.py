@@ -2602,9 +2602,15 @@ async def create_revio_project(project_id: int, request: Request, db: Session = 
     db.commit()
     try:
         result = await revio_create_project_with_milestones(project, db)
+        work_result = await sync_project_work_items(project, db)
+        result["work"] = work_result
         record_activity(
             db, project.id, request, "revio_project_created",
-            f"Created Rev PSA Project {result['revio_project_id']} with {result['milestones_created']} milestone(s)",
+            (
+                f"Created Rev PSA Project {result['revio_project_id']} with "
+                f"{result['milestones_created']} milestone(s) and "
+                f"{work_result['linked']} linked work item(s)"
+            ),
         )
         db.commit()
         return result
@@ -2668,9 +2674,16 @@ async def sync_revio_project_phases(project_id: int, request: Request, db: Sessi
     db.commit()
     try:
         result = await revio_sync_project_phases(project, db)
+        work_result = await sync_project_work_items(project, db)
+        result["work"] = work_result
         record_activity(
             db, project.id, request, "revio_phases_synced",
-            f"Synced {result['phases_created']} Rev PSA phase(s), created {result['milestones_created']} milestone(s), and organized {result['milestones_moved']} existing milestone(s)",
+            (
+                f"Synced {result['phases_created']} Rev PSA phase(s), created "
+                f"{result['milestones_created']} milestone(s), organized "
+                f"{result['milestones_moved']} existing milestone(s), and linked "
+                f"{work_result['linked']} work item(s)"
+            ),
         )
         db.commit()
         return result
