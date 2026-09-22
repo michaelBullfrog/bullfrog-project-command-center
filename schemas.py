@@ -147,6 +147,21 @@ class ProjectOut(ProjectBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ProjectTemplatePhase(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    owner_role: str = "engineer"
+    milestones: list[str] = Field(min_length=1)
+
+class ProjectTemplateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = None
+    phases: list[ProjectTemplatePhase] = Field(min_length=1)
+
+class ProjectTemplateOut(ProjectTemplateCreate):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
 class IntakeEmailCreate(BaseModel):
     message_id: str = Field(min_length=1, max_length=500)
     subject: str = Field(min_length=1, max_length=500)
