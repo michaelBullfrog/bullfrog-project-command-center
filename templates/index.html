@@ -23,7 +23,7 @@
   <main>
     <header>
       <div><p class="eyebrow">BULLFROG TECHNICAL OPERATIONS</p><h1 id="page-title">Project Command Center</h1></div>
-      <div class="header-actions"><span id="today"></span><div class="user-menu"><span class="user-avatar">{{ user.name[:1] | upper }}</span><div><strong>{{ user.name }}</strong><small>{{ user.email }}</small></div><a href="/logout">Sign out</a></div><button class="primary" id="header-new">＋ New Project</button></div>
+      <div class="header-actions"><span id="today"></span><button class="secondary" id="test-notifications" type="button">Test Notifications</button><div class="user-menu"><span class="user-avatar">{{ user.name[:1] | upper }}</span><div><strong>{{ user.name }}</strong><small>{{ user.email }}</small></div><a href="/logout">Sign out</a></div><button class="primary" id="header-new">＋ New Project</button></div>
     </header>
 
     <section id="dashboard-view" class="view">
@@ -133,6 +133,6 @@
     </div>
   </div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=1.13.4"></script>
+  <script src="/static/app.js?v=1.13.5"></script>
 </body>
 </html>
