@@ -97,10 +97,13 @@ def project_query():
     )
 
 FIELD_LABELS = {
-    "customer": "Customer", "customer_id": "Rev PSA Customer ID", "quote_id": "Rev.io Quote ID", "project_name": "Project name", "project_type": "Project type",
+    "customer": "Customer", "customer_id": "Rev PSA Customer ID", "quote_id": "Rev.io Quote ID", "revio_project_id": "Rev PSA Project ID", "project_name": "Project name", "project_type": "Project type",
     "technical_manager": "Customer Success Manager", "engineer": "Assigned Engineer",
     "sales_owner": "Sales Owner", "stage": "Stage", "risk": "Risk", "priority": "Priority",
-    "target_date": "Target go-live", "next_action": "Next action",
+    "start_date": "Start date", "target_date": "Target go-live", "project_budget": "Project budget",
+    "budget_hours": "Budget hours", "estimated_hours": "Estimated hours", "is_billable": "Billable",
+    "project_notes": "Rev PSA notes", "revio_project_status_id": "Rev PSA status",
+    "revio_project_priority_id": "Rev PSA priority", "next_action": "Next action",
     "next_action_owner": "Next action owner", "next_action_due": "Next action due",
     "blocked": "Blocked", "blocker": "Blocker", "scope": "Scope",
 }
@@ -324,6 +327,28 @@ def ensure_database_schema():
     if "quote_id" not in columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE projects ADD COLUMN quote_id VARCHAR(50)"))
+    project_additions = {
+        "revio_project_id": "VARCHAR(50)",
+        "revio_project_status_id": "INTEGER",
+        "revio_project_priority_id": "INTEGER",
+        "revio_sync_status": "VARCHAR(40) DEFAULT 'Not Created'",
+        "revio_sync_error": "TEXT",
+        "revio_synced_at": "TIMESTAMP",
+        "start_date": "DATE",
+        "project_budget": "DOUBLE PRECISION",
+        "budget_hours": "DOUBLE PRECISION",
+        "estimated_hours": "DOUBLE PRECISION",
+        "is_billable": "BOOLEAN DEFAULT TRUE",
+        "project_notes": "TEXT",
+    }
+    for column_name, column_type in project_additions.items():
+        if column_name not in columns:
+            with engine.begin() as connection:
+                connection.execute(text(f"ALTER TABLE projects ADD COLUMN {column_name} {column_type}"))
+    milestone_columns = {column["name"] for column in inspect(engine).get_columns("milestones")}
+    if "revio_milestone_id" not in milestone_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE milestones ADD COLUMN revio_milestone_id VARCHAR(50)"))
 
 def revio_configured() -> bool:
     return bool(os.getenv("REVIO_API_KEY", "").strip())
@@ -416,6 +441,196 @@ async def revio_psa_api_request(method: str, path: str, *, json_body: dict | Non
             return {}
         payload = response.json()
         return payload if isinstance(payload, dict) else {"data": payload}
+
+async def revio_project_api_request(method: str, path: str, *, json_body: dict | None = None, params: dict | None = None):
+    if not revio_configured():
+        raise RuntimeError("Rev PSA is not configured")
+    base_url = os.getenv("REVIO_PROJECT_BASE_URL", "https://apim.psarev.io").rstrip("/")
+    host = os.getenv("REVIO_HOST", "bullfrog.psarev.io").strip()
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        token = await revio_psa_access_token(client)
+        response = await client.request(
+            method,
+            f"{base_url}/{path.lstrip('/')}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-Revio-Host": host,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json=json_body,
+            params=params,
+        )
+        response.raise_for_status()
+        if not response.content:
+            return {}
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"data": payload}
+
+def revio_datetime(value: date | None) -> str | None:
+    if not value:
+        return None
+    return datetime.combine(value, datetime.min.time(), tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+
+def revio_option_list(payload: dict, *keys: str) -> list[dict]:
+    data = payload.get("data", payload) if isinstance(payload, dict) else {}
+    if not isinstance(data, dict):
+        return []
+    lowered = {str(key).lower(): value for key, value in data.items()}
+    for key in keys:
+        value = data.get(key, lowered.get(key.lower()))
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+def normalize_revio_options(payload: dict) -> dict:
+    def normalize(items: list[dict], id_keys: tuple[str, ...], name_keys: tuple[str, ...]) -> list[dict]:
+        result = []
+        for item in items:
+            option_id = revio_value(item, *id_keys)
+            name = revio_value(item, *name_keys)
+            if option_id not in (None, "") and name not in (None, ""):
+                result.append({"id": int(option_id), "name": str(name)})
+        return result
+
+    statuses = normalize(
+        revio_option_list(payload, "projectStatuses", "statuses", "projectStatusOptions"),
+        ("projectStatusId", "statusId", "id"),
+        ("projectStatusName", "statusName", "name", "displayName"),
+    )
+    priorities = normalize(
+        revio_option_list(payload, "projectPriorities", "priorities", "projectPriorityOptions"),
+        ("projectPriorityId", "priorityId", "id"),
+        ("projectPriorityName", "priorityName", "name", "displayName"),
+    )
+    member_roles = normalize(
+        revio_option_list(payload, "memberRoles", "roles", "projectMemberRoles"),
+        ("memberRoleId", "roleId", "id"),
+        ("memberRoleName", "roleName", "name", "displayName"),
+    )
+    return {"statuses": statuses, "priorities": priorities, "member_roles": member_roles}
+
+def revio_role_id(roles: list[dict], *terms: str) -> int | None:
+    for term in terms:
+        for role in roles:
+            if term in normalize_customer_name(role.get("name")):
+                return int(role["id"])
+    return None
+
+async def revio_create_project_with_milestones(project: Project, db: Session) -> dict:
+    if not (project.customer_id or "").isdigit():
+        raise RuntimeError("A numeric Rev PSA Customer ID is required")
+    if not project.revio_project_status_id:
+        raise RuntimeError("Select a Rev PSA Project Status before creating the project")
+
+    options_payload = await revio_project_api_request(
+        "GET", "/project-management/api/v1/projects/options"
+    )
+    options = normalize_revio_options(options_payload)
+    roles = options["member_roles"]
+    warnings: list[str] = []
+    team_members = []
+    seen_users = set()
+    member_specs = [
+        (project.technical_manager, True, ("projectmanager", "manager", "lead", "owner")),
+        (project.engineer, False, ("engineer", "technician", "technical")),
+        (project.sales_owner, False, ("sales",)),
+    ]
+    for name, is_lead, role_terms in member_specs:
+        if not name or name not in PSA_USERS or PSA_USERS[name] in seen_users:
+            continue
+        role_id = revio_role_id(roles, *role_terms)
+        if not role_id:
+            warnings.append(f"Could not match a Rev PSA member role for {name}; the project was created without that team assignment.")
+            continue
+        seen_users.add(PSA_USERS[name])
+        team_members.append({
+            "globalUserId": PSA_USERS[name],
+            "memberRoleId": role_id,
+            "isLead": is_lead,
+        })
+
+    start_date = project.start_date or project.created_at.date() or date.today()
+    payload = {
+        "projectName": project.project_name,
+        "projectStatusId": int(project.revio_project_status_id),
+        "startDate": revio_datetime(start_date),
+        "isBillable": bool(project.is_billable),
+        "projectOwnerId": PSA_USERS.get(project.technical_manager),
+        "projectDescription": project.scope,
+        "customerId": int(project.customer_id),
+        "teamMembers": team_members or None,
+        "notes": project.project_notes,
+    }
+    optional_values = {
+        "endDate": revio_datetime(project.target_date),
+        "projectBudget": project.project_budget,
+        "budgetHours": project.budget_hours,
+        "estimatedHours": project.estimated_hours,
+        "projectPriorityId": project.revio_project_priority_id,
+    }
+    payload.update({key: value for key, value in optional_values.items() if value is not None})
+    payload = {key: value for key, value in payload.items() if value is not None}
+
+    response = await revio_project_api_request(
+        "POST", "/project-management/api/v1/projects", json_body=payload
+    )
+    data = response.get("data", response)
+    project_id = revio_value(data, "projectId", "project_id", "id") if isinstance(data, dict) else None
+    if project_id in (None, ""):
+        project_id = revio_value(response, "projectId", "project_id", "id")
+    if project_id in (None, ""):
+        raise RuntimeError("Rev PSA created the project but did not return a Project ID")
+
+    project.revio_project_id = str(project_id)
+    project.revio_sync_status = "Creating Milestones"
+    project.revio_sync_error = None
+    project.revio_synced_at = datetime.utcnow()
+    db.flush()
+
+    created_milestones = 0
+    milestone_errors = []
+    owner_id = PSA_USERS.get(project.engineer) or PSA_USERS.get(project.technical_manager)
+    for milestone in project.milestones:
+        if milestone.revio_milestone_id:
+            continue
+        target = milestone.due_date or project.target_date or start_date
+        milestone_payload = {
+            "milestoneName": milestone.name,
+            "description": f"Bullfrog project milestone for {project.project_name}",
+            "targetDate": revio_datetime(target),
+            "ownerId": owner_id,
+        }
+        milestone_payload = {key: value for key, value in milestone_payload.items() if value is not None}
+        try:
+            milestone_response = await revio_project_api_request(
+                "POST",
+                f"/project-management/api/v1/projects/{quote(str(project_id), safe='')}/milestones",
+                json_body=milestone_payload,
+            )
+            milestone_data = milestone_response.get("data", milestone_response)
+            milestone_id = revio_value(milestone_data, "milestoneId", "milestone_id", "id") if isinstance(milestone_data, dict) else None
+            if milestone_id not in (None, ""):
+                milestone.revio_milestone_id = str(milestone_id)
+            created_milestones += 1
+        except Exception as exc:
+            logger.exception("Unable to create Rev PSA milestone %s", milestone.name)
+            milestone_errors.append(f"{milestone.name}: {exc}")
+
+    if milestone_errors:
+        project.revio_sync_status = "Partial"
+        project.revio_sync_error = " | ".join(milestone_errors)[:4000]
+        warnings.append(f"{len(milestone_errors)} milestone(s) could not be created and can be retried.")
+    else:
+        project.revio_sync_status = "Synced"
+        project.revio_sync_error = None
+    project.revio_synced_at = datetime.utcnow()
+    return {
+        "revio_project_id": project.revio_project_id,
+        "sync_status": project.revio_sync_status,
+        "milestones_created": created_milestones,
+        "warnings": warnings,
+    }
 
 def psa_ticket_ids() -> tuple[int, int, int, int]:
     return (
@@ -1745,6 +1960,53 @@ async def list_revio_billing_quotes(customer_name: str = Query(..., min_length=1
             pass
         raise HTTPException(502, detail)
     except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
+        raise HTTPException(502, str(exc))
+
+@app.get("/api/revio/projects/options")
+async def revio_project_options():
+    try:
+        payload = await revio_project_api_request(
+            "GET", "/project-management/api/v1/projects/options"
+        )
+        return normalize_revio_options(payload)
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, f"Rev PSA project options failed with status {exc.response.status_code}")
+    except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
+        raise HTTPException(502, str(exc))
+
+@app.post("/api/projects/{project_id}/revio/create", status_code=status.HTTP_201_CREATED)
+async def create_revio_project(project_id: int, request: Request, db: Session = Depends(get_db)):
+    project = db.scalar(project_query().where(Project.id == project_id))
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if project.revio_project_id:
+        raise HTTPException(409, f"Already linked to Rev PSA Project {project.revio_project_id}")
+    project.revio_sync_status = "Creating"
+    project.revio_sync_error = None
+    db.commit()
+    try:
+        result = await revio_create_project_with_milestones(project, db)
+        record_activity(
+            db, project.id, request, "revio_project_created",
+            f"Created Rev PSA Project {result['revio_project_id']} with {result['milestones_created']} milestone(s)",
+        )
+        db.commit()
+        return result
+    except httpx.HTTPStatusError as exc:
+        detail = f"Rev PSA project creation failed with status {exc.response.status_code}"
+        try:
+            body = exc.response.json()
+            detail = body.get("message") or body.get("error") or detail
+        except ValueError:
+            pass
+        project.revio_sync_status = "Failed"
+        project.revio_sync_error = str(detail)[:4000]
+        db.commit()
+        raise HTTPException(502, detail)
+    except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
+        project.revio_sync_status = "Failed"
+        project.revio_sync_error = str(exc)[:4000]
+        db.commit()
         raise HTTPException(502, str(exc))
 
 @app.get("/api/options")
