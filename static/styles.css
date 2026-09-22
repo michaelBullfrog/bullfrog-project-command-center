@@ -23,3 +23,13 @@
 
 /* Rev PSA customer lookup */
 .customer-lookup-row{display:flex;gap:7px;margin-top:5px}.customer-lookup-row input{flex:1;min-width:0;margin-top:0}.customer-lookup-row button{white-space:nowrap}.customer-lookup-row button:disabled{opacity:.6;cursor:wait}.lookup-status{display:block;min-height:16px;margin-top:5px;font-size:10px;font-weight:700}.lookup-status.success{color:var(--green-dark)}.lookup-status.error{color:#b42318}@media(max-width:560px){.customer-lookup-row{align-items:stretch;flex-direction:column}}
+
+
+.phase-group{margin:14px 0 20px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface)}
+.phase-heading{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:rgba(4,132,73,.08);border-bottom:1px solid var(--line);color:var(--ink)}
+.phase-heading strong{font-size:.9rem;color:var(--bullfrog)}
+.phase-heading span{font-size:.78rem;color:var(--muted);font-weight:700}
+.phase-group .milestone{border-radius:0;border-width:0 0 1px;margin:0}
+.phase-group .milestone:last-child{border-bottom:0}
+.meta-box small{display:block;margin-top:3px;color:var(--muted);font-size:.72rem}
+.revio-error{border-color:#efb2b2;background:#fff4f4}
