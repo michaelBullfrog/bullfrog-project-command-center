@@ -55,6 +55,9 @@ class Project(Base):
     activities: Mapped[list["ProjectActivity"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="ProjectActivity.created_at.desc()"
     )
+    work_items: Mapped[list["ProjectWorkItem"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", order_by="ProjectWorkItem.id"
+    )
 
 class CustomProjectTemplate(Base):
     __tablename__ = "custom_project_templates"
@@ -79,6 +82,30 @@ class Milestone(Base):
     revio_milestone_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     revio_phase_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     project: Mapped[Project] = relationship(back_populates="milestones")
+
+class ProjectWorkItem(Base):
+    __tablename__ = "project_work_items"
+    __table_args__ = (UniqueConstraint("project_id", "template_key", name="uq_project_work_item_template"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    template_key: Mapped[str] = mapped_column(String(180))
+    phase_name: Mapped[str] = mapped_column(String(120), index=True)
+    name: Mapped[str] = mapped_column(String(240))
+    item_type: Mapped[str] = mapped_column(String(20), index=True)
+    owner_role: Mapped[str] = mapped_column(String(30), default="engineer")
+    assignee_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    estimated_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="Planned", index=True)
+    revio_item_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    revio_work_item_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    revio_phase_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    project: Mapped[Project] = relationship(back_populates="work_items")
 
 class ProjectNote(Base):
     __tablename__ = "project_notes"
