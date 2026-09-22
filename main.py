@@ -805,7 +805,7 @@ async def revio_create_project_with_milestones(project: Project, db: Session) ->
     }
     project_hours = project.estimated_hours if project.estimated_hours is not None else project.budget_hours
     optional_values = {
-        "endDate": revio_datetime(project.target_date),
+        "endDate": revio_datetime(revio_project_end_date(project)),
         "projectBudget": project.project_budget,
         "budgetHours": project_hours,
         "estimatedHours": project_hours,
