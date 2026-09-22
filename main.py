@@ -535,6 +535,12 @@ def revio_datetime(value: date | None) -> str | None:
         return None
     return datetime.combine(value, datetime.min.time(), tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
 
+def revio_project_end_date(project: Project) -> date | None:
+    if not project.target_date:
+        return None
+    start = project.start_date or project.created_at.date() or date.today()
+    return project.target_date if project.target_date > start else start + timedelta(days=1)
+
 def revio_option_list(payload: dict, *keys: str) -> list[dict]:
     data = payload.get("data", payload) if isinstance(payload, dict) else {}
     if not isinstance(data, dict):
@@ -592,7 +598,7 @@ async def revio_update_project_details(project: Project) -> dict:
         "projectStatusId": project.revio_project_status_id,
         "projectPriorityId": project.revio_project_priority_id,
         "startDate": revio_datetime(project.start_date),
-        "endDate": revio_datetime(project.target_date),
+        "endDate": revio_datetime(revio_project_end_date(project)),
         "projectBudget": project.project_budget,
         "budgetHours": project_hours,
         "estimatedHours": project_hours,
@@ -622,22 +628,20 @@ def revio_phase_owner(project: Project, owner_role: str) -> str | None:
         return PSA_USERS.get(project.sales_owner) or PSA_USERS.get(project.technical_manager)
     return PSA_USERS.get(project.engineer) or PSA_USERS.get(project.technical_manager)
 
-def revio_phase_dates(project: Project, index: int, total: int) -> tuple[date, date | None]:
+def revio_phase_dates(project: Project, index: int, total: int) -> tuple[date, date]:
     start = project.start_date or project.created_at.date() or date.today()
-    if not project.target_date or project.target_date <= start:
-        return start, project.target_date
-    days = (project.target_date - start).days
+    effective_end = revio_project_end_date(project) or (start + timedelta(days=max(total, 1)))
+    days = max(total, (effective_end - start).days)
     phase_start = start + timedelta(days=round(days * index / total))
-    phase_end = start + timedelta(days=round(days * (index + 1) / total))
+    calculated_end = start + timedelta(days=round(days * (index + 1) / total))
+    phase_end = max(calculated_end, phase_start + timedelta(days=1))
     return phase_start, phase_end
 
 async def revio_sync_project_phases(project: Project, db: Session) -> dict:
     if not project.revio_project_id:
         raise RuntimeError("Create the Rev PSA project before syncing phases")
     phase_status_id = int(
-        (os.getenv("REVIO_PSA_PHASE_STATUS_ID") or "").strip()
-        or project.revio_project_status_id
-        or 0
+        (os.getenv("REVIO_PSA_PHASE_STATUS_ID") or "").strip() or "1"
     )
     if not phase_status_id:
         raise RuntimeError("A Rev PSA phase status is required")
@@ -2233,10 +2237,13 @@ async def create_revio_project(project_id: int, request: Request, db: Session = 
         db.commit()
         return result
     except httpx.HTTPStatusError as exc:
-        detail = revio_http_error_detail(
-            exc, f"Rev PSA project creation failed with status {exc.response.status_code}"
+        fallback = (
+            f"Rev PSA Project {project.revio_project_id} was created, but phase sync failed with status {exc.response.status_code}"
+            if project.revio_project_id
+            else f"Rev PSA project creation failed with status {exc.response.status_code}"
         )
-        project.revio_sync_status = "Failed"
+        detail = revio_http_error_detail(exc, fallback)
+        project.revio_sync_status = "Phase Sync Failed" if project.revio_project_id else "Failed"
         project.revio_sync_error = str(detail)[:4000]
         db.commit()
         raise HTTPException(502, detail)
