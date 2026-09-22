@@ -1,4 +1,4 @@
-const state={projects:[],intake:[],intakeError:null,options:{},view:"dashboard",detailId:null};
+const state={projects:[],intake:[],intakeError:null,options:{},revioProjectOptions:{statuses:[],priorities:[],member_roles:[]},revioProjectOptionsError:null,view:"dashboard",detailId:null};
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const fmtDate=v=>v?new Date(v+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"Not set";
 const daysUntil=v=>v?Math.ceil((new Date(v+"T23:59:59")-new Date())/86400000):null;
@@ -13,7 +13,16 @@ function active(){return state.projects.filter(p=>p.stage!=="Complete")}
 function isOverdue(p){return p.next_action_due&&daysUntil(p.next_action_due)<0&&p.stage!=="Complete"}
 function needsAttention(p){return p.stage!=="Complete"&&(p.risk!=="Green"||isOverdue(p))}
 function row(p,compact=false){return '<tr data-id="'+p.id+'"><td><div class="item-title">'+safe(p.customer)+'</div><div class="item-sub">'+safe(p.project_name)+'</div></td>'+(compact?'<td>'+safe(p.project_type)+'</td>':'')+'<td>'+safe(p.engineer||"Unassigned")+'</td><td><span class="badge stage">'+safe(p.stage)+'</span></td><td>'+badge(p.risk)+'</td><td>'+fmtDate(p.target_date)+'</td><td><div>'+safe(p.next_action||"No next action")+'</div><div class="item-sub">'+safe(p.next_action_owner||"Unassigned")+'</div></td></tr>'}
-async function load(){[state.options,state.projects]=await Promise.all([api("/api/options"),api("/api/projects")]);fillOptions();renderAll()}
+async function load(){
+ const [options,projects,revioOptions]=await Promise.all([
+  api("/api/options"),
+  api("/api/projects"),
+  api("/api/revio/projects/options").catch(e=>({error:e.message,statuses:[],priorities:[],member_roles:[]}))
+ ]);
+ state.options=options;state.projects=projects;
+ if(revioOptions.error){state.revioProjectOptionsError=revioOptions.error}else{state.revioProjectOptions=revioOptions}
+ fillOptions();renderAll()
+}
 function fillOptions(){
  const maps=[["filter-stage",state.options.stages],["filter-risk",state.options.risks],["filter-type",state.options.project_types]];
  maps.forEach(([id,vals])=>{const el=$("#"+id);vals.forEach(v=>el.insertAdjacentHTML("beforeend",'<option>'+safe(v)+'</option>'))});
@@ -30,6 +39,13 @@ function fillOptions(){
  ].forEach(([n,vals,allowBlank,blankLabel])=>{
   form.elements[n].innerHTML=(allowBlank?'<option value="">'+blankLabel+'</option>':"")+vals.map(v=>'<option>'+safe(v)+'</option>').join("")
  });
+ const revioStatus=form.elements.revio_project_status_id,revioPriority=form.elements.revio_project_priority_id;
+ revioStatus.innerHTML='<option value="">Select Rev PSA status…</option>'+state.revioProjectOptions.statuses.map(v=>'<option value="'+v.id+'">'+safe(v.name)+'</option>').join("");
+ revioPriority.innerHTML='<option value="">No Rev PSA priority</option>'+state.revioProjectOptions.priorities.map(v=>'<option value="'+v.id+'">'+safe(v.name)+'</option>').join("");
+ if(state.revioProjectOptionsError){
+  $("#revio-project-status").textContent="Rev PSA project options could not load: "+state.revioProjectOptionsError;
+  $("#revio-project-status").className="lookup-status span-2 error";
+ }
 }
 function renderAll(){renderDashboard();renderProjects();renderTeam();bindRows()}
 function renderDashboard(){
@@ -104,9 +120,14 @@ async function loadSignedQuotes(customerName,selectedId=""){
 }
 
 function openForm(project=null,intakeId=null){
- const f=$("#project-form");f.reset();$("#customer-lookup-status").textContent="";$("#customer-lookup-status").className="lookup-status";resetQuoteOptions(project?.quote_id||"");$("#project-id").value=project?.id||"";$("#intake-id").value=intakeId||"";$("#form-title").textContent=intakeId?"Review Project Intake":project?"Edit Project":"New Project";
+ const f=$("#project-form");f.reset();$("#customer-lookup-status").textContent="";$("#customer-lookup-status").className="lookup-status";$("#revio-project-status").textContent=state.revioProjectOptionsError?"Rev PSA project options could not load: "+state.revioProjectOptionsError:"";$("#revio-project-status").className="lookup-status span-2 "+(state.revioProjectOptionsError?"error":"");resetQuoteOptions(project?.quote_id||"");$("#project-id").value=project?.id||"";$("#intake-id").value=intakeId||"";$("#form-title").textContent=intakeId?"Review Project Intake":project?"Edit Project":"New Project";
  f.elements.technical_manager.value=project?.technical_manager||"Chad";
- if(project)Object.entries(project).forEach(([k,v])=>{if(f.elements[k]){if(f.elements[k].type==="checkbox")f.elements[k].checked=!!v;else f.elements[k].value=v??""}});
+ f.elements.start_date.value=project?.start_date||new Date().toISOString().slice(0,10);
+ f.elements.is_billable.checked=project?project.is_billable!==false:true;
+ f.elements.create_in_revio.checked=!project?.revio_project_id&&!state.revioProjectOptionsError;
+ if(project)Object.entries(project).forEach(([k,v])=>{if(f.elements[k]&&k!=="create_in_revio"){if(f.elements[k].type==="checkbox")f.elements[k].checked=!!v;else f.elements[k].value=v??""}});
+ $("#create-revio-row").classList.toggle("hidden",!!project?.revio_project_id);
+ if(project?.revio_project_id){$("#revio-project-status").textContent="✓ Linked to Rev PSA Project "+project.revio_project_id;$("#revio-project-status").className="lookup-status span-2 success"}
  $("#project-modal").classList.remove("hidden");if(project?.customer)loadSignedQuotes(project.customer,project.quote_id||"")
 }
 async function openDetail(id,initialTab="milestones"){
@@ -117,8 +138,9 @@ async function openDetail(id,initialTab="milestones"){
  const contacts=p.contacts.length?p.contacts.map(c=>'<div class="contact-card"><div class="contact-avatar">'+safe(c.name.charAt(0).toUpperCase())+'</div><div class="contact-info"><strong>'+safe(c.name)+'</strong><span>'+safe(c.role||c.contact_type)+(c.is_primary?' · Primary contact':'')+'</span><div>'+(c.email?'<a href="mailto:'+encodeURIComponent(c.email)+'">'+safe(c.email)+'</a>':'')+(c.phone?'<a href="tel:'+encodeURIComponent(c.phone)+'">'+safe(c.phone)+'</a>':'')+'</div></div><div class="contact-actions"><button class="text-btn" data-edit-contact="'+c.id+'">Edit</button><button class="text-btn danger" data-delete-contact="'+c.id+'">Delete</button></div></div>').join(""):'<div class="empty">No customer contacts yet.</div>';
  const activities=p.activities.length?p.activities.map(a=>'<div class="activity-item"><span class="activity-dot '+safe(a.action)+'"></span><div><strong>'+safe(a.description)+'</strong><div class="small">'+safe(a.actor_name)+' · '+new Date(a.created_at).toLocaleString()+'</div></div></div>').join(""):'<div class="empty">Activity will appear as the project is updated.</div>';
  $("#project-detail").innerHTML=
- '<div class="detail-hero"><div><p class="eyebrow">'+safe(p.project_type)+'</p><h2>'+safe(p.customer)+' — '+safe(p.project_name)+'</h2><div>'+badge(p.risk)+' <span class="badge stage">'+safe(p.stage)+'</span></div></div><div class="detail-actions"><button class="secondary" id="edit-project">Edit</button><button class="secondary danger" id="delete-project">Delete</button></div></div>'+
- '<div class="detail-meta"><div class="meta-box"><span>Rev Customer ID</span><strong>'+safe(p.customer_id||"Not linked")+'</strong></div><div class="meta-box"><span>Rev Billing Source</span><strong>'+safe(p.quote_id||"Not selected")+'</strong></div><div class="meta-box"><span>Go-Live</span><strong>'+fmtDate(p.target_date)+'</strong></div><div class="meta-box"><span>Engineer</span><strong>'+safe(p.engineer||"Unassigned")+'</strong></div><div class="meta-box"><span>Customer Success</span><strong>'+safe(p.technical_manager)+'</strong></div><div class="meta-box"><span>Priority</span><strong>'+safe(p.priority)+'</strong></div></div>'+
+ '<div class="detail-hero"><div><p class="eyebrow">'+safe(p.project_type)+'</p><h2>'+safe(p.customer)+' — '+safe(p.project_name)+'</h2><div>'+badge(p.risk)+' <span class="badge stage">'+safe(p.stage)+'</span></div></div><div class="detail-actions">'+(!p.revio_project_id?'<button class="primary" id="create-revio-project">Create in Rev PSA</button>':'')+'<button class="secondary" id="edit-project">Edit</button><button class="secondary danger" id="delete-project">Delete</button></div></div>'+
+ '<div class="detail-meta"><div class="meta-box"><span>Rev Customer ID</span><strong>'+safe(p.customer_id||"Not linked")+'</strong></div><div class="meta-box"><span>Rev PSA Project</span><strong>'+safe(p.revio_project_id||"Not created")+'</strong><small>'+safe(p.revio_sync_status||"Not Created")+'</small></div><div class="meta-box"><span>Rev Billing Source</span><strong>'+safe(p.quote_id||"Not selected")+'</strong></div><div class="meta-box"><span>Start</span><strong>'+fmtDate(p.start_date)+'</strong></div><div class="meta-box"><span>Go-Live</span><strong>'+fmtDate(p.target_date)+'</strong></div><div class="meta-box"><span>Engineer</span><strong>'+safe(p.engineer||"Unassigned")+'</strong></div><div class="meta-box"><span>Customer Success</span><strong>'+safe(p.technical_manager)+'</strong></div><div class="meta-box"><span>Priority</span><strong>'+safe(p.priority)+'</strong></div></div>'+
+ (p.revio_sync_error?'<div class="next-box revio-error"><p class="eyebrow">REV PSA SYNC NEEDS ATTENTION</p><strong>'+safe(p.revio_sync_error)+'</strong></div>':'')+
  '<div class="next-box"><p class="eyebrow">NEXT ACTION</p><strong>'+safe(p.next_action||"No next action entered")+'</strong><div class="small">Owner: '+safe(p.next_action_owner||"Unassigned")+' · Due: '+fmtDate(p.next_action_due)+'</div></div>'+
  '<div class="section-box scope-box"><h3>Project Scope</h3><div class="scope">'+safe(p.scope||"No scope entered.")+'</div></div>'+
  '<div class="detail-tabs"><button data-detail-tab="milestones">Milestones <span>'+done+'/'+total+'</span></button><button data-detail-tab="notes">Notes & Attachments <span>'+p.notes.length+'</span></button><button data-detail-tab="contacts">Customer Contacts <span>'+p.contacts.length+'</span></button><button data-detail-tab="activity">Activity History <span>'+p.activities.length+'</span></button></div>'+
@@ -130,6 +152,8 @@ async function openDetail(id,initialTab="milestones"){
  const activateTab=name=>{$$("[data-detail-tab]").forEach(x=>x.classList.toggle("active",x.dataset.detailTab===name));$$("[data-detail-panel]").forEach(x=>x.classList.toggle("hidden",x.dataset.detailPanel!==name))};
  activateTab(initialTab);
  $$("[data-detail-tab]").forEach(x=>x.onclick=()=>activateTab(x.dataset.detailTab));
+ const createRevio=$("#create-revio-project");
+ if(createRevio)createRevio.onclick=async()=>{createRevio.disabled=true;createRevio.textContent="Creating…";try{const result=await api("/api/projects/"+id+"/revio/create",{method:"POST"});await refresh();openDetail(id);toast("Rev PSA Project "+result.revio_project_id+" created with "+result.milestones_created+" milestones")}catch(e){await refresh();openDetail(id);toast("Rev PSA creation failed: "+e.message)}};
  $("#edit-project").onclick=()=>{close("detail-modal");openForm(p)};
  $("#delete-project").onclick=async()=>{if(confirm("Delete this project permanently?")){await api("/api/projects/"+id,{method:"DELETE"});close("detail-modal");await refresh();toast("Project deleted")}};
  $$("[data-milestone]").forEach(x=>x.onchange=async()=>{await api("/api/milestones/"+x.dataset.milestone,{method:"PATCH",body:JSON.stringify({status:x.checked?"Complete":"Not Started"})});await refresh();openDetail(id,"milestones")});
@@ -143,7 +167,7 @@ async function openDetail(id,initialTab="milestones"){
 }
 function close(id){$("#"+id).classList.add("hidden")}
 async function refresh(){state.projects=await api("/api/projects");try{state.intake=await api("/api/intake");state.intakeError=null}catch(e){console.error("Project intake:",e);state.intake=[];state.intakeError=e.message}renderAll()}
-$("#project-form").onsubmit=async e=>{e.preventDefault();const f=e.target,d=Object.fromEntries(new FormData(f));["target_date","next_action_due"].forEach(k=>{if(!d[k])delete d[k]});const id=$("#project-id").value,intakeId=$("#intake-id").value;const url=intakeId?"/api/intake/"+intakeId+"/convert":id?"/api/projects/"+id:"/api/projects";const body=intakeId?{project:d}:d;await api(url,{method:id?"PUT":"POST",body:JSON.stringify(body)});close("project-modal");await refresh();if(intakeId)setView("projects");toast(id?"Project updated":intakeId?"Intake converted to project":"Project created")};
+$("#project-form").onsubmit=async e=>{e.preventDefault();const f=e.target,d=Object.fromEntries(new FormData(f));const createInRevio=f.elements.create_in_revio.checked;delete d.create_in_revio;d.is_billable=f.elements.is_billable.checked;["start_date","target_date","next_action_due"].forEach(k=>{if(!d[k])delete d[k]});["revio_project_status_id","revio_project_priority_id","project_budget","budget_hours","estimated_hours"].forEach(k=>{if(d[k]==="")delete d[k];else d[k]=Number(d[k])});if(createInRevio&&!d.revio_project_status_id){$("#revio-project-status").textContent="Select a Rev PSA Project Status before creating the Rev PSA project.";$("#revio-project-status").className="lookup-status span-2 error";return}const id=$("#project-id").value,intakeId=$("#intake-id").value;const url=intakeId?"/api/intake/"+intakeId+"/convert":id?"/api/projects/"+id:"/api/projects";const body=intakeId?{project:d}:d;const saved=await api(url,{method:id?"PUT":"POST",body:JSON.stringify(body)});let revioMessage="";if(createInRevio&&!saved.revio_project_id){try{const result=await api("/api/projects/"+saved.id+"/revio/create",{method:"POST"});revioMessage=" Rev PSA Project "+result.revio_project_id+" created with "+result.milestones_created+" milestones."}catch(err){revioMessage=" Bullfrog project saved, but Rev PSA creation failed: "+err.message}}close("project-modal");await refresh();if(intakeId)setView("projects");toast((id?"Project updated":intakeId?"Intake converted to project":"Project created")+revioMessage)};
 $$(".nav-link").forEach(n=>n.onclick=()=>setView(n.dataset.view));$$("[data-go]").forEach(n=>n.onclick=()=>setView(n.dataset.go));
 $("#lookup-customer").onclick=async()=>{const form=$("#project-form"),customerId=form.elements.customer_id.value.trim(),button=$("#lookup-customer"),statusEl=$("#customer-lookup-status");if(!/^\d+$/.test(customerId)){statusEl.textContent="Enter a numeric Customer ID first.";statusEl.className="lookup-status error";return}button.disabled=true;button.textContent="Searching…";statusEl.textContent="";resetQuoteOptions();try{const result=await api("/api/revio/customers/"+encodeURIComponent(customerId));form.elements.customer.value=result.customer_name;statusEl.textContent="✓ Customer found: "+result.customer_name;statusEl.className="lookup-status success";button.textContent="Loading quotes…";await loadSignedQuotes(result.customer_name);form.elements.quote_id.focus()}catch(e){statusEl.textContent=e.message;statusEl.className="lookup-status error"}finally{button.disabled=false;button.textContent="Search Rev PSA"}};
 $("#sync-intake").onclick=async()=>{const button=$("#sync-intake");button.disabled=true;button.textContent="Syncing…";try{const result=await api("/api/graph/sync",{method:"POST"});await loadIntake();toast(result.imported?result.imported+" email(s) added to Project Intake":"Inbox is already up to date")}catch(e){toast("Inbox sync failed: "+e.message)}finally{button.disabled=false;button.textContent="↻ Sync Inbox"}};
