@@ -1004,6 +1004,129 @@ async def revio_create_project_with_milestones(project: Project, db: Session) ->
     result["warnings"] = warnings
     return result
 
+def revio_work_phase_id(project: Project, item: ProjectWorkItem) -> str:
+    phase_id = next(
+        (milestone.revio_phase_id for milestone in project.milestones
+         if milestone.phase_name == item.phase_name and milestone.revio_phase_id),
+        None,
+    )
+    if not phase_id:
+        raise RuntimeError(
+            f"Rev PSA phase {item.phase_name} has not been created yet. Sync project phases first."
+        )
+    return str(phase_id)
+
+async def revio_create_work_ticket(project: Project, item: ProjectWorkItem) -> str:
+    if not (project.customer_id or "").isdigit():
+        raise RuntimeError("A numeric Rev PSA Customer ID is required")
+    assignee = item.assignee_name or work_item_assignee(project, item.owner_role)
+    if not assignee or assignee not in PSA_USERS:
+        raise RuntimeError(f"{item.name} does not have a mapped Rev PSA assignee")
+    ticket_type_id, new_status_id, _, priority_id = psa_ticket_ids()
+    hours = f"\nEstimated effort: {item.estimated_hours:g} hours" if item.estimated_hours is not None else ""
+    payload = {
+        "customerId": int(project.customer_id),
+        "ticketDescription": f"{project.customer} — {item.name}",
+        "ticketTypeId": ticket_type_id,
+        "ticketStatusId": new_status_id,
+        "ticketPriorityId": priority_id,
+        "techAssigned": assignee,
+        "techsAssociated": [{
+            "globalUserId": PSA_USERS[assignee],
+            "techName": "Matthew" if assignee == "Matt" else assignee,
+            "workComplete": False,
+            "role": "Assigned",
+        }],
+        "workRequested": (
+            f"{item.description or item.name}{hours}\n\n"
+            f"Bullfrog Project: {project.project_name}\n"
+            f"Customer: {project.customer}\n"
+            f"Project Type: {project.project_type}\n"
+            f"Phase: {item.phase_name}"
+        ),
+    }
+    path = os.getenv("REVIO_PSA_TICKET_CREATE_PATH", "/psac/api/v1/ticket")
+    response = await revio_psa_api_request("POST", path, json_body=payload)
+    data = response.get("data", response)
+    ticket_id = revio_value(data, "ticketId", "ticket_id", "id") if isinstance(data, dict) else None
+    if ticket_id in (None, ""):
+        ticket_id = revio_value(response, "ticketId", "ticket_id", "id")
+    if ticket_id in (None, ""):
+        raise RuntimeError("Rev PSA created the ticket but did not return a ticket ID")
+    return str(ticket_id)
+
+async def revio_link_work_item(
+    item: ProjectWorkItem, external_id: str, phase_id: str
+) -> str:
+    is_ticket = item.item_type == "Ticket"
+    path = (
+        "/project-management/api/v1/work-items/tickets"
+        if is_ticket else
+        "/project-management/api/v1/work-items/tasks"
+    )
+    normalized_id = int(external_id) if str(external_id).isdigit() else str(external_id)
+    normalized_phase = int(phase_id) if str(phase_id).isdigit() else str(phase_id)
+    payload = {
+        "ticketId" if is_ticket else "calendarItemId": normalized_id,
+        "phaseId": normalized_phase,
+    }
+    response = await revio_project_api_request("POST", path, json_body=payload)
+    data = response.get("data", response)
+    work_item_id = revio_value(
+        data, "workItemId", "projectWorkItemId", "work_item_id", "id"
+    ) if isinstance(data, dict) else None
+    if work_item_id in (None, ""):
+        work_item_id = revio_value(
+            response, "workItemId", "projectWorkItemId", "work_item_id", "id"
+        )
+    return str(work_item_id or f"linked:{external_id}")
+
+async def sync_project_work_items(project: Project, db: Session) -> dict:
+    if not project.revio_project_id:
+        raise RuntimeError("Create the Rev PSA project before syncing work")
+    add_project_work_items(db, project)
+    db.flush()
+    created = linked = already_linked = pending_tasks = failed = 0
+    errors: list[str] = []
+    for item in project.work_items:
+        if item.revio_work_item_id:
+            already_linked += 1
+            continue
+        try:
+            phase_id = revio_work_phase_id(project, item)
+            item.revio_phase_id = phase_id
+            external_id = item.revio_item_id
+            if item.item_type == "Task" and not external_id:
+                item.status = "Needs Scheduling"
+                item.sync_error = None
+                pending_tasks += 1
+                continue
+            if not external_id:
+                external_id = await revio_create_work_ticket(project, item)
+                item.revio_item_id = external_id
+                item.status = "Created"
+                created += 1
+                db.flush()
+            item.revio_work_item_id = await revio_link_work_item(item, external_id, phase_id)
+            item.status = "Linked"
+            item.sync_error = None
+            item.synced_at = datetime.utcnow()
+            linked += 1
+        except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
+            item.status = "Needs Attention"
+            item.sync_error = str(exc)[:2000]
+            failed += 1
+            errors.append(f"{item.name}: {exc}")
+    db.flush()
+    return {
+        "created": created,
+        "linked": linked,
+        "already_linked": already_linked,
+        "pending_tasks": pending_tasks,
+        "failed": failed,
+        "errors": errors,
+    }
+
 def revio_http_error_detail(exc: httpx.HTTPStatusError, fallback: str) -> str:
     response = exc.response
     details: list[str] = []
@@ -2389,6 +2512,77 @@ async def revio_project_options():
     except httpx.HTTPStatusError as exc:
         raise HTTPException(502, f"Rev PSA project options failed with status {exc.response.status_code}")
     except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
+        raise HTTPException(502, str(exc))
+
+@app.post("/api/projects/{project_id}/revio/sync-work")
+async def sync_revio_project_work(
+    project_id: int, request: Request, db: Session = Depends(get_db)
+):
+    project = db.scalar(project_query().where(Project.id == project_id))
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if not project.revio_project_id:
+        raise HTTPException(409, "Create the Rev PSA project before syncing work")
+    try:
+        result = await sync_project_work_items(project, db)
+        description = (
+            f"Synced Rev PSA work: {result['linked']} linked, "
+            f"{result['pending_tasks']} task(s) need scheduling"
+        )
+        if result["failed"]:
+            description += f", {result['failed']} need attention"
+        record_activity(db, project.id, request, "revio_work_synced", description)
+        db.commit()
+        return result
+    except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
+        db.commit()
+        raise HTTPException(502, str(exc))
+
+@app.post("/api/work-items/{work_item_id}/link")
+async def link_revio_project_work_item(
+    work_item_id: int, payload: WorkItemLink, request: Request,
+    db: Session = Depends(get_db),
+):
+    item = db.get(ProjectWorkItem, work_item_id)
+    if not item:
+        raise HTTPException(404, "Project work item not found")
+    project = db.scalar(project_query().where(Project.id == item.project_id))
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if not project.revio_project_id:
+        raise HTTPException(409, "Create the Rev PSA project before linking work")
+    external_id = payload.external_id.strip()
+    try:
+        phase_id = revio_work_phase_id(project, item)
+        item.revio_item_id = external_id
+        item.revio_phase_id = phase_id
+        item.revio_work_item_id = await revio_link_work_item(item, external_id, phase_id)
+        item.status = "Linked"
+        item.sync_error = None
+        item.synced_at = datetime.utcnow()
+        record_activity(
+            db, project.id, request, "revio_work_linked",
+            f"Linked {item.item_type.lower()} {external_id} to {item.phase_name}: {item.name}",
+        )
+        db.commit()
+        return {
+            "id": item.id,
+            "status": item.status,
+            "external_id": item.revio_item_id,
+            "work_item_id": item.revio_work_item_id,
+        }
+    except httpx.HTTPStatusError as exc:
+        detail = revio_http_error_detail(
+            exc, f"Rev PSA work-item link failed with status {exc.response.status_code}"
+        )
+        item.status = "Needs Attention"
+        item.sync_error = str(detail)[:2000]
+        db.commit()
+        raise HTTPException(502, detail)
+    except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
+        item.status = "Needs Attention"
+        item.sync_error = str(exc)[:2000]
+        db.commit()
         raise HTTPException(502, str(exc))
 
 @app.post("/api/projects/{project_id}/revio/create", status_code=status.HTTP_201_CREATED)
