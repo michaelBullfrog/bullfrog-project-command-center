@@ -20,6 +20,30 @@ class MilestoneOut(MilestoneCreate):
     revio_phase_id: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
+class ProjectWorkItemOut(BaseModel):
+    id: int
+    project_id: int
+    template_key: str
+    phase_name: str
+    name: str
+    item_type: str
+    owner_role: str
+    assignee_name: str | None = None
+    description: str | None = None
+    estimated_hours: float | None = None
+    status: str
+    revio_item_id: str | None = None
+    revio_work_item_id: str | None = None
+    revio_phase_id: str | None = None
+    sync_error: str | None = None
+    synced_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class WorkItemLink(BaseModel):
+    external_id: str = Field(min_length=1, max_length=50)
+
 class AttachmentOut(BaseModel):
     id: int
     filename: str
@@ -141,16 +165,25 @@ class ProjectOut(ProjectBase):
     created_at: datetime
     updated_at: datetime
     milestones: list[MilestoneOut] = []
+    work_items: list[ProjectWorkItemOut] = []
     notes: list[NoteOut] = []
     contacts: list[ContactOut] = []
     activities: list[ActivityOut] = []
     model_config = ConfigDict(from_attributes=True)
 
 
+class ProjectTemplateWorkItem(BaseModel):
+    name: str = Field(min_length=1, max_length=240)
+    item_type: str
+    owner_role: str = "engineer"
+    estimated_hours: float | None = Field(default=None, ge=0)
+    description: str | None = None
+
 class ProjectTemplatePhase(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     owner_role: str = "engineer"
     milestones: list[str] = Field(min_length=1)
+    work_items: list[ProjectTemplateWorkItem] = []
 
 class ProjectTemplateCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
