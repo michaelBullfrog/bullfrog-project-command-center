@@ -52,6 +52,9 @@ PSA_PRIORITY_ID = 2
 
 def psa_ticket_automation_enabled() -> bool:
     return os.getenv("REVIO_PSA_TICKET_AUTOMATION_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+
+def revio_project_ticket_board() -> str:
+    return os.getenv("REVIO_PSA_PROJECT_TICKET_BOARD", "Onboarding").strip() or "Onboarding"
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_ATTACHMENTS_PER_NOTE = 5
 ALLOWED_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt"}
@@ -1030,6 +1033,7 @@ async def revio_create_work_ticket(project: Project, item: ProjectWorkItem) -> s
         "ticketTypeId": ticket_type_id,
         "ticketStatusId": new_status_id,
         "ticketPriorityId": priority_id,
+        "userGroupTarget": revio_project_ticket_board(),
         "techAssigned": assignee,
         "techsAssociated": [{
             "globalUserId": PSA_USERS[assignee],
@@ -1306,6 +1310,7 @@ async def revio_psa_create_ticket(project: Project, workflow: PsaTicketWorkflow)
         "ticketTypeId": ticket_type_id,
         "ticketStatusId": new_status_id,
         "ticketPriorityId": priority_id,
+        "userGroupTarget": revio_project_ticket_board(),
         "techAssigned": workflow.assignee_name,
         "techsAssociated": [
             {
