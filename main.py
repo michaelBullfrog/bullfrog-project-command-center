@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import quote, unquote, urlencode
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -2147,6 +2148,332 @@ async def psa_ticket_maintenance():
             await process_psa_ticket_workflow(workflow_id)
 
 
+async def graph_send_project_notification(
+    recipient: str, subject: str, body: str, sender: str | None = None
+):
+    if not graph_configured():
+        raise RuntimeError("Microsoft Graph is not configured")
+    sender_address = (
+        sender
+        or os.getenv("PSA_NOTIFICATION_SENDER", "michael@bullfrog.net")
+    ).strip()
+    if not sender_address:
+        raise RuntimeError("The project notification sender is not configured")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        token = await graph_access_token(client)
+        response = await client.post(
+            f"{GRAPH_API}/users/{quote(sender_address, safe='')}/sendMail",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={
+                "message": {
+                    "subject": subject,
+                    "body": {"contentType": "HTML", "content": body},
+                    "toRecipients": [{"emailAddress": {"address": recipient}}],
+                },
+                "saveToSentItems": True,
+            },
+        )
+        response.raise_for_status()
+
+
+def notification_was_sent(db: Session, project_id: int, event_key: str) -> bool:
+    return db.scalar(
+        select(ProjectActivity.id).where(
+            ProjectActivity.project_id == project_id,
+            ProjectActivity.action == "notification_sent",
+            ProjectActivity.field_name == event_key,
+        )
+    ) is not None
+
+
+def record_notification_sent(
+    db: Session, project_id: int, event_key: str, description: str
+):
+    db.add(ProjectActivity(
+        project_id=project_id,
+        actor_name="Bullfrog Automation",
+        actor_email=None,
+        action="notification_sent",
+        field_name=event_key,
+        old_value=None,
+        new_value="Sent",
+        description=description,
+    ))
+
+
+async def send_go_live_notification(project_id: int, milestone_id: int):
+    event_key = f"go_live:{milestone_id}"
+    db = SessionLocal()
+    try:
+        project = db.get(Project, project_id)
+        milestone = db.get(Milestone, milestone_id)
+        if (
+            not project
+            or not milestone
+            or milestone.status != "Complete"
+            or normalize_customer_name(milestone.name) != "golive"
+            or notification_was_sent(db, project_id, event_key)
+        ):
+            return False
+        snapshot = {
+            "customer": project.customer,
+            "project_name": project.project_name,
+            "project_type": project.project_type,
+            "target_date": project.target_date,
+            "engineer": project.engineer,
+            "csm": project.technical_manager,
+        }
+    finally:
+        db.close()
+
+    app_url = (os.getenv("APP_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
+    project_link = (
+        f'<p><a href="{html.escape(app_url)}">Open Bullfrog Projects</a></p>'
+        if app_url else ""
+    )
+    body = f"""
+      <p><strong>{html.escape(snapshot['customer'])}</strong> has reached the Go Live milestone.</p>
+      <table>
+        <tr><td><strong>Project</strong></td><td>{html.escape(snapshot['project_name'])}</td></tr>
+        <tr><td><strong>Project Type</strong></td><td>{html.escape(snapshot['project_type'])}</td></tr>
+        <tr><td><strong>Go-Live Date</strong></td><td>{html.escape(str(snapshot['target_date'] or 'Not set'))}</td></tr>
+        <tr><td><strong>Engineer</strong></td><td>{html.escape(snapshot['engineer'] or 'Not assigned')}</td></tr>
+        <tr><td><strong>Customer Success Manager</strong></td><td>{html.escape(snapshot['csm'] or 'Not assigned')}</td></tr>
+      </table>
+      {project_link}
+    """
+    recipient = os.getenv("GO_LIVE_NOTIFICATION_EMAIL", "carrie@bullfrog.net").strip()
+    await graph_send_project_notification(
+        recipient,
+        f"Project Go Live — {snapshot['customer']}",
+        body,
+    )
+
+    db = SessionLocal()
+    try:
+        if not notification_was_sent(db, project_id, event_key):
+            record_notification_sent(
+                db, project_id, event_key,
+                f"Sent Go Live notification to {recipient}",
+            )
+            db.commit()
+    finally:
+        db.close()
+    return True
+
+
+def parse_revio_milestone_date(value) -> date | None:
+    if isinstance(value, date):
+        return value
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+    except ValueError:
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except ValueError:
+            return None
+
+
+def revio_milestone_complete(item: dict) -> bool:
+    completed = revio_value(
+        item, "completedDate", "dateCompleted", "completionDate", "isCompleted"
+    )
+    if isinstance(completed, bool):
+        return completed
+    if completed not in (None, "", False):
+        return True
+    status_value = revio_value(item, "statusName", "status", "milestoneStatus")
+    if isinstance(status_value, dict):
+        status_value = revio_value(status_value, "name", "statusName", "displayName")
+    return "complete" in normalize_customer_name(str(status_value or ""))
+
+
+async def run_daily_project_notifications() -> dict:
+    # Retry any Go Live notification that could not be sent at checkbox time.
+    db = SessionLocal()
+    try:
+        completed_go_lives = list(db.execute(
+            select(Milestone.project_id, Milestone.id).where(
+                Milestone.status == "Complete",
+                Milestone.name.ilike("Go Live"),
+            )
+        ).all())
+    finally:
+        db.close()
+    go_live_sent = 0
+    for project_id, milestone_id in completed_go_lives:
+        try:
+            if await send_go_live_notification(project_id, milestone_id):
+                go_live_sent += 1
+        except Exception:
+            logger.exception("Unable to send Go Live notification for project %s", project_id)
+
+    db = SessionLocal()
+    try:
+        projects = list(db.scalars(
+            select(Project).where(
+                Project.revio_project_id.is_not(None),
+                Project.stage != "Complete",
+            )
+        ).all())
+        sent_keys = {
+            (activity.project_id, activity.field_name)
+            for activity in db.scalars(
+                select(ProjectActivity).where(
+                    ProjectActivity.action == "notification_sent"
+                )
+            ).all()
+        }
+    finally:
+        db.close()
+
+    today = datetime.now(ZoneInfo(
+        os.getenv("PROJECT_NOTIFICATION_TIMEZONE", "America/New_York")
+    )).date()
+    approaching_days = max(1, int(os.getenv("FOC_APPROACHING_DAYS", "7")))
+    alerts: list[dict] = []
+    for project in projects:
+        try:
+            response = await revio_project_api_request(
+                "GET",
+                f"/project-management/api/v1/projects/{quote(str(project.revio_project_id), safe='')}/milestones",
+                params={"archivedFilter": "Active", "page": 1, "pageSize": 100},
+            )
+            milestones = revio_records(response)
+        except Exception:
+            logger.exception("Unable to read Rev PSA milestones for project %s", project.id)
+            continue
+        for item in milestones:
+            if revio_milestone_complete(item):
+                continue
+            name = str(revio_value(item, "milestoneName", "name", "title") or "Unnamed milestone")
+            milestone_id = str(revio_value(
+                item, "milestoneId", "projectMilestoneId", "id"
+            ) or normalize_customer_name(name))
+            status_value = revio_value(item, "statusName", "status", "milestoneStatus")
+            if isinstance(status_value, dict):
+                status_value = revio_value(status_value, "name", "statusName", "displayName")
+            status_name = str(status_value or "Active")
+            normalized_status = normalize_customer_name(status_name)
+            target_date = parse_revio_milestone_date(revio_value(
+                item, "targetDate", "dueDate", "endDate"
+            ))
+            days_until = (target_date - today).days if target_date else None
+            target_key = target_date.isoformat() if target_date else "no-date"
+
+            event_type = None
+            reason = None
+            if (
+                normalize_customer_name(name) in ("focreceived", "focrecieved")
+                and (
+                    "approach" in normalized_status
+                    or (days_until is not None and 0 <= days_until <= approaching_days)
+                )
+            ):
+                event_type = "foc_approaching"
+                reason = (
+                    f"FOC is approaching in {days_until} day{'s' if days_until != 1 else ''}"
+                    if days_until is not None else "FOC is marked Approaching in Rev PSA"
+                )
+            elif (
+                "pastdue" in normalized_status
+                or "overdue" in normalized_status
+                or (days_until is not None and days_until < 0)
+            ):
+                event_type = "milestone_past_due"
+                reason = (
+                    f"{abs(days_until)} day{'s' if abs(days_until) != 1 else ''} past due"
+                    if days_until is not None else "Marked past due in Rev PSA"
+                )
+            if not event_type:
+                continue
+            event_key = f"{event_type}:{milestone_id}:{target_key}"
+            if (project.id, event_key) in sent_keys:
+                continue
+            alerts.append({
+                "project_id": project.id,
+                "event_key": event_key,
+                "customer": project.customer,
+                "project_name": project.project_name,
+                "milestone": name,
+                "status": status_name,
+                "target_date": target_date,
+                "reason": reason,
+            })
+
+    if not alerts:
+        return {"go_live_sent": go_live_sent, "milestone_alerts_sent": 0}
+
+    rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(alert['customer'])}</td>"
+        f"<td>{html.escape(alert['project_name'])}</td>"
+        f"<td>{html.escape(alert['milestone'])}</td>"
+        f"<td>{html.escape(str(alert['target_date'] or 'Not set'))}</td>"
+        f"<td>{html.escape(alert['status'])}</td>"
+        f"<td>{html.escape(alert['reason'])}</td>"
+        "</tr>"
+        for alert in alerts
+    )
+    app_url = (os.getenv("APP_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
+    project_link = (
+        f'<p><a href="{html.escape(app_url)}">Open Bullfrog Projects</a></p>'
+        if app_url else ""
+    )
+    body = f"""
+      <p>The daily Bullfrog Projects milestone review found <strong>{len(alerts)}</strong> item(s) requiring attention.</p>
+      <table>
+        <thead><tr><th>Customer</th><th>Project</th><th>Milestone</th><th>Target</th><th>Rev PSA Status</th><th>Reason</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+      {project_link}
+    """
+    recipient = os.getenv(
+        "PSA_MILESTONE_NOTIFICATION_EMAIL", "psanotification@bullfrog.net"
+    ).strip()
+    await graph_send_project_notification(
+        recipient,
+        f"Bullfrog Projects milestone alerts — {len(alerts)} item(s)",
+        body,
+    )
+    db = SessionLocal()
+    try:
+        for alert in alerts:
+            if not notification_was_sent(db, alert["project_id"], alert["event_key"]):
+                record_notification_sent(
+                    db, alert["project_id"], alert["event_key"],
+                    f"Sent {alert['reason']} notification for {alert['milestone']} to {recipient}",
+                )
+        db.commit()
+    finally:
+        db.close()
+    return {"go_live_sent": go_live_sent, "milestone_alerts_sent": len(alerts)}
+
+
+async def project_notification_maintenance():
+    while True:
+        timezone_name = os.getenv(
+            "PROJECT_NOTIFICATION_TIMEZONE", "America/New_York"
+        ).strip() or "America/New_York"
+        try:
+            local_zone = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError:
+            logger.error("Unknown project notification timezone %s; using UTC", timezone_name)
+            local_zone = timezone.utc
+        now = datetime.now(local_zone)
+        run_hour = min(23, max(0, int(os.getenv("PROJECT_NOTIFICATION_HOUR", "7"))))
+        next_run = now.replace(hour=run_hour, minute=0, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+        await asyncio.sleep(max(1, (next_run - now).total_seconds()))
+        try:
+            await run_daily_project_notifications()
+        except Exception:
+            logger.exception("Daily project notification check failed")
+
+
 async def graph_send_hardware_order_email(project: dict, billing_customer: dict, signed_quote: dict):
     if not graph_configured():
         raise RuntimeError("Microsoft Graph is not configured")
@@ -2324,12 +2651,14 @@ async def lifespan(app: FastAPI):
     ensure_project_work_items()
     graph_task = asyncio.create_task(graph_subscription_maintenance())
     hardware_task = asyncio.create_task(hardware_order_maintenance())
+    notification_task = asyncio.create_task(project_notification_maintenance())
     psa_ticket_task = asyncio.create_task(psa_ticket_maintenance()) if psa_ticket_automation_enabled() else None
     try:
         yield
     finally:
         graph_task.cancel()
         hardware_task.cancel()
+        notification_task.cancel()
         if psa_ticket_task:
             psa_ticket_task.cancel()
 
@@ -3084,6 +3413,11 @@ def update_milestone(
         and item.status == "Complete"
         and normalized_milestone == "hardwarepaymentcheck"
     )
+    should_send_go_live = (
+        old_status != "Complete"
+        and item.status == "Complete"
+        and normalized_milestone == "golive"
+    )
     psa_workflow_id = None
     if should_check_hardware_order:
         workflow = db.scalar(
@@ -3118,6 +3452,10 @@ def update_milestone(
     db.commit(); db.refresh(item)
     if should_check_hardware_order and workflow.status != "Sent":
         background_tasks.add_task(process_hardware_order_workflow, item.project_id)
+    if should_send_go_live:
+        background_tasks.add_task(
+            send_go_live_notification, item.project_id, item.id
+        )
     if psa_workflow_id:
         background_tasks.add_task(process_psa_ticket_workflow, psa_workflow_id)
     return item
