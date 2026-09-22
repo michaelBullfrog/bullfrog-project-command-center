@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Bullfrog Project Command Center</title>
-  <link rel="stylesheet" href="/static/styles.css?v=1.11.0">
+  <link rel="stylesheet" href="/static/styles.css?v=1.12.0">
 </head>
 <body>
   <aside class="sidebar">
@@ -14,6 +14,7 @@
       <button class="nav-link" data-view="projects">☷ <span>Projects</span></button>
       <button class="nav-link" data-view="intake">✉ <span>Project Intake</span><span class="nav-count hidden" id="intake-nav-count"></span></button>
       <button class="nav-link" data-view="team">♙ <span>Team View</span></button>
+      <button class="nav-link" data-view="templates">⚙ <span>Project Types</span></button>
     </nav>
     <button class="primary wide" id="sidebar-new">＋ New Project</button>
     <div class="sidebar-foot"><span class="live-dot"></span> System online</div>
@@ -58,6 +59,14 @@
     <section id="team-view" class="view hidden">
       <div class="panel-head standalone"><div><p class="eyebrow">CAPACITY</p><h2>Engineer Workload</h2></div></div>
       <div class="team-grid" id="team-grid"></div>
+    </section>
+
+    <section id="templates-view" class="view hidden">
+      <article class="panel">
+        <div class="panel-head"><div><p class="eyebrow">WORKFLOW DESIGNER</p><h2>Custom Project Types</h2></div><button class="primary" id="new-template">＋ Add Project Type</button></div>
+        <p class="section-intro">Create reusable project types with their own Rev PSA phases, owners, and milestone checklists.</p>
+        <div id="template-list" class="template-list"></div>
+      </article>
     </section>
   </main>
 
@@ -109,7 +118,24 @@
   <div class="modal hidden" id="detail-modal">
     <div class="modal-card detail-card"><button class="modal-close" data-close="detail-modal">×</button><div id="project-detail"></div></div>
   </div>
+
+  <div class="modal hidden" id="template-modal">
+    <div class="modal-card template-form-card">
+      <button class="modal-close" data-close="template-modal">×</button>
+      <p class="eyebrow">WORKFLOW DESIGNER</p><h2 id="template-form-title">New Project Type</h2>
+      <form id="template-form">
+        <input type="hidden" id="template-id">
+        <div class="form-grid">
+          <label>Project type name*<input name="name" maxlength="100" required placeholder="Example: Security Deployment"></label>
+          <label>Description<input name="description" maxlength="500" placeholder="What this project type is used for"></label>
+        </div>
+        <div class="phase-builder-head"><div><strong>Phases and milestones</strong><span>The first phase will be Active in Rev PSA; later phases start Planned.</span></div><button type="button" class="secondary" id="add-template-phase">＋ Add Phase</button></div>
+        <div id="phase-builder" class="phase-builder"></div>
+        <div class="form-actions"><button type="button" class="secondary" data-close="template-modal">Cancel</button><button class="primary" type="submit">Save Project Type</button></div>
+      </form>
+    </div>
+  </div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=1.11.0"></script>
+  <script src="/static/app.js?v=1.12.0"></script>
 </body>
 </html>
