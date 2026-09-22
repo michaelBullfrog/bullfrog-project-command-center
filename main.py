@@ -242,32 +242,47 @@ def work_item_assignee(project: Project, owner_role: str) -> str | None:
         return project.sales_owner or project.technical_manager
     return project.engineer or project.technical_manager
 
+def project_work_owner_role(phase_name: str) -> str:
+    normalized = (phase_name or "").strip().casefold()
+    return "engineer" if ("design" in normalized or "discover" in normalized) else "csm"
+
 def project_work_template_key(definition: dict) -> str:
     raw = f"{definition['phase']}::{definition['item_type']}::{definition['name']}"
     return re.sub(r"[^a-z0-9]+", "-", raw.casefold()).strip("-")[:180]
 
 def add_project_work_items(db: Session, project: Project):
     existing = {
-        item.template_key for item in db.scalars(
+        item.template_key: item for item in db.scalars(
             select(ProjectWorkItem).where(ProjectWorkItem.project_id == project.id)
         ).all()
     }
     for definition in project_work_definitions(project.project_type, db):
         template_key = project_work_template_key(definition)
-        if template_key in existing:
+        owner_role = project_work_owner_role(definition["phase"])
+        assignee = work_item_assignee(project, owner_role)
+        current = existing.get(template_key)
+        if current:
+            current.phase_name = definition["phase"]
+            current.name = definition["name"]
+            current.item_type = definition["item_type"]
+            current.owner_role = owner_role
+            current.assignee_name = assignee
+            current.description = definition.get("description")
+            current.estimated_hours = definition.get("hours")
             continue
-        db.add(ProjectWorkItem(
+        item = ProjectWorkItem(
             project_id=project.id,
             template_key=template_key,
             phase_name=definition["phase"],
             name=definition["name"],
             item_type=definition["item_type"],
-            owner_role=definition.get("owner", "engineer"),
-            assignee_name=work_item_assignee(project, definition.get("owner", "engineer")),
+            owner_role=owner_role,
+            assignee_name=assignee,
             description=definition.get("description"),
             estimated_hours=definition.get("hours"),
-        ))
-        existing.add(template_key)
+        )
+        db.add(item)
+        existing[template_key] = item
 
 def ensure_project_work_items():
     db = SessionLocal()
@@ -1019,7 +1034,9 @@ def revio_work_phase_id(project: Project, item: ProjectWorkItem) -> str:
         )
     return str(phase_id)
 
-async def revio_create_work_ticket(project: Project, item: ProjectWorkItem) -> str:
+def revio_work_ticket_payload(
+    project: Project, item: ProjectWorkItem, *, include_board: bool
+) -> dict:
     if not (project.customer_id or "").isdigit():
         raise RuntimeError("A numeric Rev PSA Customer ID is required")
     assignee = item.assignee_name or work_item_assignee(project, item.owner_role)
@@ -1033,7 +1050,6 @@ async def revio_create_work_ticket(project: Project, item: ProjectWorkItem) -> s
         "ticketTypeId": ticket_type_id,
         "ticketStatusId": new_status_id,
         "ticketPriorityId": priority_id,
-        "userGroupTarget": revio_project_ticket_board(),
         "techAssigned": assignee,
         "techsAssociated": [{
             "globalUserId": PSA_USERS[assignee],
@@ -1049,8 +1065,15 @@ async def revio_create_work_ticket(project: Project, item: ProjectWorkItem) -> s
             f"Phase: {item.phase_name}"
         ),
     }
+    if include_board:
+        payload["userGroupTarget"] = revio_project_ticket_board()
+    return payload
+
+async def revio_create_work_ticket(project: Project, item: ProjectWorkItem) -> str:
     path = os.getenv("REVIO_PSA_TICKET_CREATE_PATH", "/psac/api/v1/ticket")
-    response = await revio_psa_api_request("POST", path, json_body=payload)
+    response = await revio_psa_api_request(
+        "POST", path, json_body=revio_work_ticket_payload(project, item, include_board=False)
+    )
     data = response.get("data", response)
     ticket_id = revio_value(data, "ticketId", "ticket_id", "id") if isinstance(data, dict) else None
     if ticket_id in (None, ""):
@@ -1058,6 +1081,18 @@ async def revio_create_work_ticket(project: Project, item: ProjectWorkItem) -> s
     if ticket_id in (None, ""):
         raise RuntimeError("Rev PSA created the ticket but did not return a ticket ID")
     return str(ticket_id)
+
+async def revio_update_work_ticket(
+    project: Project, item: ProjectWorkItem, ticket_id: str
+):
+    path_template = os.getenv(
+        "REVIO_PSA_TICKET_UPDATE_PATH", "/psac/api/v1/ticket/{ticket_id}"
+    )
+    return await revio_psa_api_request(
+        "PUT",
+        path_template.format(ticket_id=quote(str(ticket_id), safe="")),
+        json_body=revio_work_ticket_payload(project, item, include_board=True),
+    )
 
 async def revio_link_work_item(
     item: ProjectWorkItem, external_id: str, phase_id: str
@@ -1096,11 +1131,13 @@ async def sync_project_work_items(project: Project, db: Session) -> dict:
         .order_by(ProjectWorkItem.id)
     ).all())
     created = linked = already_linked = pending_tasks = failed = 0
+    board_updated = board_failed = 0
     errors: list[str] = []
     for item in work_items:
-        if item.revio_work_item_id:
-            already_linked += 1
-            continue
+        owner_role = project_work_owner_role(item.phase_name)
+        item.owner_role = owner_role
+        item.assignee_name = work_item_assignee(project, owner_role)
+        board_warning = None
         try:
             phase_id = revio_work_phase_id(project, item)
             item.revio_phase_id = phase_id
@@ -1116,9 +1153,26 @@ async def sync_project_work_items(project: Project, db: Session) -> dict:
                 item.status = "Created"
                 created += 1
                 db.flush()
+            if item.item_type == "Ticket":
+                try:
+                    await revio_update_work_ticket(project, item, external_id)
+                    board_updated += 1
+                except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
+                    board_failed += 1
+                    board_warning = (
+                        f"Ticket {external_id} was created, but assigning it to "
+                        f"{revio_project_ticket_board()} failed: {exc}"
+                    )
+                    errors.append(f"{item.name}: {board_warning}")
+            if item.revio_work_item_id:
+                item.status = "Linked" if not board_warning else "Linked - Board Warning"
+                item.sync_error = board_warning
+                item.synced_at = item.synced_at or datetime.utcnow()
+                already_linked += 1
+                continue
             item.revio_work_item_id = await revio_link_work_item(item, external_id, phase_id)
-            item.status = "Linked"
-            item.sync_error = None
+            item.status = "Linked" if not board_warning else "Linked - Board Warning"
+            item.sync_error = board_warning
             item.synced_at = datetime.utcnow()
             linked += 1
         except (httpx.HTTPError, KeyError, ValueError, RuntimeError) as exc:
@@ -1132,6 +1186,8 @@ async def sync_project_work_items(project: Project, db: Session) -> dict:
         "linked": linked,
         "already_linked": already_linked,
         "pending_tasks": pending_tasks,
+        "board_updated": board_updated,
+        "board_failed": board_failed,
         "failed": failed,
         "errors": errors,
     }
