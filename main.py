@@ -20,11 +20,11 @@ from sqlalchemy import inspect, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from database import Base, SessionLocal, engine, get_db
-from models import CustomProjectTemplate, CustomerContact, HardwareOrderWorkflow, IntakeEmail, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote, PsaTicketWorkflow
+from models import CustomProjectTemplate, CustomerContact, HardwareOrderWorkflow, IntakeEmail, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote, ProjectWorkItem, PsaTicketWorkflow
 from schemas import (
     ContactCreate, ContactOut, ContactUpdate, IntakeConvert, IntakeEmailCreate, IntakeEmailOut,
     MilestoneCreate, MilestoneOut, MilestoneUpdate, NoteOut, ProjectCreate, ProjectOut, ProjectUpdate,
-    ProjectTemplateCreate, ProjectTemplateOut,
+    ProjectTemplateCreate, ProjectTemplateOut, WorkItemLink,
 )
 
 STAGES = ["Intake", "Technical Review", "Ready to Schedule", "Implementation", "Testing",
@@ -117,6 +117,61 @@ PHASE_TEMPLATES = {
     ],
 }
 
+WORK_ITEM_TEMPLATES = {
+    "Webex Calling": [
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review signed scope, ownership, dependencies, and target dates with the Bullfrog delivery team."},
+        {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Hold the customer kickoff and confirm contacts, scope, schedule, and required inputs."},
+        {"phase": "Design & Discovery", "name": "Calling Design and Call Flow", "item_type": "Ticket", "owner": "engineer", "hours": 3.0, "description": "Document dial plan, calling features, auto attendants, queues, hours, caller ID, and emergency calling requirements."},
+        {"phase": "Design & Discovery", "name": "Collect User and Porting Documents", "item_type": "Ticket", "owner": "csm", "hours": 1.5, "description": "Collect and validate the user spreadsheet, number inventory, LOA, CSR, and customer approvals."},
+        {"phase": "Hardware & Provisioning", "name": "Order and Track Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order approved hardware after payment clearance and record shipment and tracking information."},
+        {"phase": "Hardware & Provisioning", "name": "Configure Users and Devices", "item_type": "Ticket", "owner": "engineer", "hours": 4.0, "description": "Provision users, workspaces, licenses, calling features, and device assignments."},
+        {"phase": "Number Porting", "name": "Submit and Manage Number Port", "item_type": "Ticket", "owner": "engineer", "hours": 2.0, "description": "Submit number ports, manage rejects, record FOC, and validate port completion."},
+        {"phase": "Go Live & Closeout", "name": "Customer Training", "item_type": "Task", "owner": "engineer", "hours": 1.0, "description": "Provide administrator and end-user training before go-live."},
+        {"phase": "Go Live & Closeout", "name": "Go-Live Appointment", "item_type": "Task", "owner": "engineer", "hours": 2.0, "description": "Complete the scheduled cutover, testing, and customer validation."},
+        {"phase": "Go Live & Closeout", "name": "Post-Go-Live Review", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review service after go-live and capture outstanding items."},
+        {"phase": "Go Live & Closeout", "name": "Documentation and Closeout", "item_type": "Ticket", "owner": "csm", "hours": 1.0, "description": "Complete documentation, acceptance, handoff, and project closeout."},
+    ],
+    "Webex Contact Center": [
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review scope, ownership, integrations, dependencies, and target dates."},
+        {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Confirm project scope, contacts, schedule, and required discovery inputs."},
+        {"phase": "Design", "name": "Contact Center Discovery and Call Flow", "item_type": "Ticket", "owner": "engineer", "hours": 4.0, "description": "Document entry points, queues, teams, routing, IVR, hours, recording, and reporting requirements."},
+        {"phase": "Build & Integration", "name": "Build Contact Center Configuration", "item_type": "Ticket", "owner": "engineer", "hours": 8.0, "description": "Configure users, agents, teams, queues, routing flows, desktop profiles, and required integrations."},
+        {"phase": "Testing & Training", "name": "Customer Acceptance Testing", "item_type": "Ticket", "owner": "engineer", "hours": 3.0, "description": "Execute test cases and resolve issues before customer acceptance."},
+        {"phase": "Testing & Training", "name": "Supervisor and Agent Training", "item_type": "Task", "owner": "engineer", "hours": 2.0, "description": "Deliver scheduled supervisor and agent training."},
+        {"phase": "Go Live & Closeout", "name": "Go-Live Appointment", "item_type": "Task", "owner": "engineer", "hours": 2.0, "description": "Complete the scheduled production cutover and validation."},
+        {"phase": "Go Live & Closeout", "name": "Post-Go-Live Review", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review production results and outstanding issues."},
+        {"phase": "Go Live & Closeout", "name": "Documentation and Closeout", "item_type": "Ticket", "owner": "csm", "hours": 1.0, "description": "Complete documentation, acceptance, handoff, and closeout."},
+    ],
+    "Meraki": [
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review scope, hardware, dependencies, and installation targets."},
+        {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Confirm contacts, topology, schedule, access, and required inputs."},
+        {"phase": "Hardware", "name": "Order and Track Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order approved hardware and record shipment and tracking details."},
+        {"phase": "Design & Configuration", "name": "Network Design and Configuration", "item_type": "Ticket", "owner": "engineer", "hours": 5.0, "description": "Complete topology, VLAN, addressing, firewall, VPN, switching, and wireless configuration."},
+        {"phase": "Design & Configuration", "name": "Register and Stage Devices", "item_type": "Ticket", "owner": "engineer", "hours": 3.0, "description": "Claim, register, update, configure, and stage Meraki equipment."},
+        {"phase": "Deployment", "name": "Installation Appointment", "item_type": "Task", "owner": "engineer", "hours": 4.0, "description": "Perform the scheduled onsite or remote deployment."},
+        {"phase": "Deployment", "name": "Validation and Documentation", "item_type": "Ticket", "owner": "engineer", "hours": 2.0, "description": "Validate connectivity and services, resolve issues, and complete documentation."},
+        {"phase": "Closeout", "name": "Customer Follow-Up", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review the completed deployment with the customer."},
+        {"phase": "Closeout", "name": "Project Closeout", "item_type": "Ticket", "owner": "csm", "hours": 1.0, "description": "Complete acceptance, internal handoff, and closeout."},
+    ],
+    "Network": [
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review scope, hardware, dependencies, and installation targets."},
+        {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Confirm contacts, topology, schedule, access, and required inputs."},
+        {"phase": "Hardware", "name": "Order and Track Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order approved hardware and record shipment and tracking details."},
+        {"phase": "Design & Configuration", "name": "Network Design and Configuration", "item_type": "Ticket", "owner": "engineer", "hours": 5.0, "description": "Complete network design, addressing, security, switching, wireless, and configuration work."},
+        {"phase": "Deployment", "name": "Installation Appointment", "item_type": "Task", "owner": "engineer", "hours": 4.0, "description": "Perform the scheduled onsite or remote deployment."},
+        {"phase": "Deployment", "name": "Validation and Documentation", "item_type": "Ticket", "owner": "engineer", "hours": 2.0, "description": "Validate the deployment, resolve issues, and complete documentation."},
+        {"phase": "Closeout", "name": "Customer Follow-Up", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review the completed deployment with the customer."},
+        {"phase": "Closeout", "name": "Project Closeout", "item_type": "Ticket", "owner": "csm", "hours": 1.0, "description": "Complete acceptance, internal handoff, and closeout."},
+    ],
+    "Other": [
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review scope, ownership, dependencies, and target dates."},
+        {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Confirm customer contacts, scope, schedule, and inputs."},
+        {"phase": "Delivery", "name": "Project Delivery Work", "item_type": "Ticket", "owner": "engineer", "hours": 4.0, "description": "Complete the technical implementation and testing work."},
+        {"phase": "Closeout", "name": "Customer Follow-Up", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review the completed work with the customer."},
+        {"phase": "Closeout", "name": "Project Closeout", "item_type": "Ticket", "owner": "csm", "hours": 1.0, "description": "Complete documentation, acceptance, and closeout."},
+    ],
+}
+
 def custom_template_phases(db: Session, project_type: str) -> list[dict] | None:
     template = db.scalar(
         select(CustomProjectTemplate).where(CustomProjectTemplate.name == project_type)
@@ -132,6 +187,17 @@ def custom_template_phases(db: Session, project_type: str) -> list[dict] | None:
             "name": str(phase.get("name") or "").strip(),
             "owner": str(phase.get("owner_role") or phase.get("owner") or "engineer").strip(),
             "milestones": [str(name).strip() for name in phase.get("milestones", []) if str(name).strip()],
+            "work_items": [
+                {
+                    "name": str(work.get("name") or "").strip(),
+                    "item_type": str(work.get("item_type") or "Ticket").strip().title(),
+                    "owner": str(work.get("owner_role") or work.get("owner") or "engineer").strip().lower(),
+                    "hours": work.get("estimated_hours"),
+                    "description": str(work.get("description") or "").strip() or None,
+                }
+                for work in phase.get("work_items", [])
+                if str(work.get("name") or "").strip()
+            ],
         }
         for phase in phases
         if str(phase.get("name") or "").strip()
@@ -149,6 +215,66 @@ def project_template_milestones(project_type: str, db: Session) -> list[tuple[st
         for phase in project_phase_definitions(project_type, db)
         for milestone in phase["milestones"]
     ]
+
+def project_work_definitions(project_type: str, db: Session) -> list[dict]:
+    if project_type in WORK_ITEM_TEMPLATES:
+        return WORK_ITEM_TEMPLATES[project_type]
+    definitions = []
+    for phase in project_phase_definitions(project_type, db):
+        for work in phase.get("work_items", []):
+            definitions.append({
+                "phase": phase["name"],
+                "name": work["name"],
+                "item_type": work.get("item_type", "Ticket"),
+                "owner": work.get("owner", phase.get("owner", "engineer")),
+                "hours": work.get("hours"),
+                "description": work.get("description"),
+            })
+    return definitions
+
+def work_item_assignee(project: Project, owner_role: str) -> str | None:
+    if owner_role == "csm":
+        return project.technical_manager
+    if owner_role == "sales":
+        return project.sales_owner or project.technical_manager
+    return project.engineer or project.technical_manager
+
+def project_work_template_key(definition: dict) -> str:
+    raw = f"{definition['phase']}::{definition['item_type']}::{definition['name']}"
+    return re.sub(r"[^a-z0-9]+", "-", raw.casefold()).strip("-")[:180]
+
+def add_project_work_items(db: Session, project: Project):
+    existing = {
+        item.template_key for item in db.scalars(
+            select(ProjectWorkItem).where(ProjectWorkItem.project_id == project.id)
+        ).all()
+    }
+    for definition in project_work_definitions(project.project_type, db):
+        template_key = project_work_template_key(definition)
+        if template_key in existing:
+            continue
+        db.add(ProjectWorkItem(
+            project_id=project.id,
+            template_key=template_key,
+            phase_name=definition["phase"],
+            name=definition["name"],
+            item_type=definition["item_type"],
+            owner_role=definition.get("owner", "engineer"),
+            assignee_name=work_item_assignee(project, definition.get("owner", "engineer")),
+            description=definition.get("description"),
+            estimated_hours=definition.get("hours"),
+        ))
+        existing.add(template_key)
+
+def ensure_project_work_items():
+    db = SessionLocal()
+    try:
+        projects = list(db.scalars(select(Project).where(Project.stage != "Complete")).all())
+        for project in projects:
+            add_project_work_items(db, project)
+        db.commit()
+    finally:
+        db.close()
 
 def milestone_phase_info(
     project_type: str, milestone_name: str, db: Session | None = None
@@ -185,6 +311,7 @@ WORKFLOW_MILESTONES = {
 def project_query():
     return select(Project).options(
         selectinload(Project.milestones),
+        selectinload(Project.work_items),
         selectinload(Project.notes).selectinload(ProjectNote.attachments),
         selectinload(Project.contacts),
         selectinload(Project.activities),
@@ -1930,6 +2057,7 @@ async def lifespan(app: FastAPI):
     seed_database()
     ensure_project_workflow_milestones()
     ensure_project_phase_names()
+    ensure_project_work_items()
     graph_task = asyncio.create_task(graph_subscription_maintenance())
     hardware_task = asyncio.create_task(hardware_order_maintenance())
     psa_ticket_task = asyncio.create_task(psa_ticket_maintenance()) if psa_ticket_automation_enabled() else None
@@ -2200,6 +2328,7 @@ def convert_intake(intake_id: int, payload: IntakeConvert, request: Request, db:
     db.flush()
     for name, phase_name in project_template_milestones(project.project_type, db):
         db.add(Milestone(project_id=project.id, name=name, phase_name=phase_name))
+    add_project_work_items(db, project)
     record_activity(
         db, project.id, request, "project_created",
         f"Created project from email intake: {item.subject}",
@@ -2401,7 +2530,23 @@ def normalized_project_template(payload: ProjectTemplateCreate) -> tuple[str, st
             milestones.append(milestone_name)
         if not milestones:
             raise HTTPException(400, f"Phase {phase_name} needs at least one milestone")
-        phases.append({"name": phase_name, "owner_role": owner_role, "milestones": milestones})
+        work_items = []
+        for work in item.work_items:
+            work_name = work.name.strip()
+            work_type = work.item_type.strip().title()
+            work_owner = work.owner_role.strip().lower()
+            if work_type not in {"Ticket", "Task"}:
+                raise HTTPException(400, f"Work item {work_name} must be a Ticket or Task")
+            if work_owner not in {"csm", "engineer", "sales"}:
+                raise HTTPException(400, f"Invalid owner role for work item {work_name}")
+            work_items.append({
+                "name": work_name,
+                "item_type": work_type,
+                "owner_role": work_owner,
+                "estimated_hours": work.estimated_hours,
+                "description": work.description.strip() if work.description and work.description.strip() else None,
+            })
+        phases.append({"name": phase_name, "owner_role": owner_role, "milestones": milestones, "work_items": work_items})
     return name, description, phases
 
 def ensure_template_name_available(
@@ -2496,6 +2641,7 @@ def create_project(payload: ProjectCreate, request: Request, db: Session = Depen
     db.flush()
     for name, phase_name in project_template_milestones(project.project_type, db):
         db.add(Milestone(project_id=project.id, name=name, phase_name=phase_name))
+    add_project_work_items(db, project)
     record_activity(db, project.id, request, "project_created", f"Created project {project.project_name}")
     db.commit()
     return db.scalar(project_query().where(Project.id == project.id))
