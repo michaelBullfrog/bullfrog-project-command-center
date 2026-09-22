@@ -35,8 +35,7 @@ function fillOptions(){
   ["risk",state.options.risks,false,""],
   ["technical_manager",state.options.customer_success_managers,false,""],
   ["engineer",state.options.engineers,true,"Unassigned"],
-  ["sales_owner",state.options.sales_owners,true,"Unassigned"],
-  ["next_action_owner",state.options.next_action_owners,true,"Unassigned"]
+  ["sales_owner",state.options.sales_owners,true,"Unassigned"]
  ].forEach(([n,vals,allowBlank,blankLabel])=>{
   form.elements[n].innerHTML=(allowBlank?'<option value="">'+blankLabel+'</option>':"")+vals.map(v=>'<option>'+safe(v)+'</option>').join("")
  });
