@@ -636,7 +636,6 @@ async def revio_update_project_details(project: Project) -> dict:
         "projectPriorityId": project.revio_project_priority_id,
         "startDate": revio_datetime(project.start_date),
         "endDate": revio_datetime(revio_project_end_date(project)),
-        "projectBudget": project.project_budget,
         "budgetHours": project_hours,
         "estimatedHours": project_hours,
         "isBillable": bool(project.is_billable),
@@ -721,7 +720,6 @@ async def revio_sync_project_phases(project: Project, db: Session) -> dict:
             "endDate": revio_datetime(phase_end),
             "description": f"{phase_name} phase for {project.project_name}",
             "phaseOwnerId": owner_id,
-            "budgetAllocation": (project.project_budget / total_phases) if project.project_budget is not None else None,
             "plannedHours": (((project.estimated_hours if project.estimated_hours is not None else project.budget_hours) / total_phases) if (project.estimated_hours is not None or project.budget_hours is not None) else None),
             "isAtRisk": project.risk == "Red",
             "progressPercent": progress,
@@ -805,8 +803,6 @@ async def revio_create_project_with_milestones(project: Project, db: Session) ->
     start_date = project.start_date or project.created_at.date() or date.today()
     if project.target_date and project.target_date < start_date:
         raise RuntimeError("Target go-live cannot be earlier than the project start date")
-    if project.project_budget is not None and project.project_budget < 0:
-        raise RuntimeError("Project budget cannot be negative")
     if project.budget_hours is not None and project.budget_hours < 0:
         raise RuntimeError("Budget hours cannot be negative")
     if project.estimated_hours is not None and project.estimated_hours < 0:
@@ -855,7 +851,6 @@ async def revio_create_project_with_milestones(project: Project, db: Session) ->
     project_hours = project.estimated_hours if project.estimated_hours is not None else project.budget_hours
     optional_values = {
         "endDate": revio_datetime(revio_project_end_date(project)),
-        "projectBudget": project.project_budget,
         "budgetHours": project_hours,
         "estimatedHours": project_hours,
         "projectPriorityId": project.revio_project_priority_id,
