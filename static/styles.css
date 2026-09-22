@@ -44,3 +44,34 @@
 button:disabled{opacity:.72;cursor:wait}
 .button-spinner{display:inline-block;width:13px;height:13px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;vertical-align:-2px;animation:button-spin .7s linear infinite}
 @keyframes button-spin{to{transform:rotate(360deg)}}
+
+
+/* Phase work planning and Rev PSA linking */
+.work-section{padding:0;overflow:hidden}
+.work-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:18px 18px 14px}
+.work-head h3{margin:0 0 5px}
+.work-head p{max-width:670px;margin:0;color:var(--muted);font-size:11px;line-height:1.5}
+.work-notice{border:1px solid #dce7d9;border-radius:8px;background:#f6faf4;color:var(--muted);padding:9px 11px;font-size:10px;font-weight:750}
+.work-summary{display:flex;gap:8px;flex-wrap:wrap;padding:0 18px 15px}
+.work-summary span{border-radius:18px;background:#eaf5e7;color:var(--green-dark);padding:6px 10px;font-size:10px;font-weight:800}
+.work-phase{border-top:1px solid var(--line)}
+.work-phase .phase-heading{border-bottom:1px solid var(--line)}
+.work-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:center;padding:15px 18px;border-bottom:1px solid #e6ede4;background:#fff}
+.work-item:last-child{border-bottom:0}
+.work-item.linked{box-shadow:inset 3px 0 0 var(--green)}
+.work-item.attention{box-shadow:inset 3px 0 0 #d33c32;background:#fffafa}
+.work-item-main{min-width:0}
+.work-item-title{display:flex;align-items:center;gap:8px}
+.work-item-title strong{font-size:13px;color:var(--ink)}
+.work-type{display:inline-flex;border-radius:15px;padding:4px 7px;font-size:9px;font-weight:900;letter-spacing:.05em;text-transform:uppercase}
+.work-type.ticket{background:#e6f2fb;color:#236687}
+.work-type.task{background:#f0eafb;color:#6a45a1}
+.work-item p{margin:7px 0;color:#5c6860;font-size:11px;line-height:1.45}
+.work-meta{display:flex;gap:12px;flex-wrap:wrap;color:var(--muted);font-size:10px}
+.work-error{margin-top:9px;border:1px solid #f0c5c2;border-radius:7px;background:#fff2f1;color:#a22d26;padding:7px 9px;font-size:10px}
+.work-state{white-space:nowrap;color:var(--green-dark);font-size:10px;font-weight:850}
+.work-link{display:flex;align-items:flex-end;gap:7px}
+.work-link label{font-size:10px;font-weight:750;color:#4d5d53}
+.work-link input{width:190px;margin-top:4px;background:#fff}
+.template-work-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-top:10px}
+@media(max-width:760px){.work-head,.work-item{align-items:stretch;grid-template-columns:1fr;flex-direction:column}.work-link{align-items:stretch;flex-direction:column}.work-link input{width:100%}.template-work-grid{grid-template-columns:1fr}}
