@@ -2819,6 +2819,57 @@ def health():
 def get_current_user(request: Request):
     return request.session["user"]
 
+@app.post("/api/notifications/test")
+async def test_project_notifications(request: Request):
+    user = request.session.get("user") or {}
+    requested_by = html.escape(user.get("name") or user.get("email") or "Bullfrog user")
+    sender = os.getenv("PSA_NOTIFICATION_SENDER", "michael@bullfrog.net").strip()
+    recipients = [
+        ("Go Live", os.getenv("GO_LIVE_NOTIFICATION_EMAIL", "carrie@bullfrog.net").strip()),
+        ("Milestone Alert", os.getenv(
+            "PSA_MILESTONE_NOTIFICATION_EMAIL", "psanotification@bullfrog.net"
+        ).strip()),
+    ]
+    timestamp = datetime.now(timezone.utc).strftime("%B %d, %Y at %I:%M %p UTC")
+    body = f"""
+      <p><strong>Bullfrog Projects notification test</strong></p>
+      <p>This is a test only. No project or milestone was changed.</p>
+      <table>
+        <tr><td><strong>Requested by</strong></td><td>{requested_by}</td></tr>
+        <tr><td><strong>Sent at</strong></td><td>{html.escape(timestamp)}</td></tr>
+        <tr><td><strong>Sender</strong></td><td>{html.escape(sender)}</td></tr>
+      </table>
+    """
+    results = []
+    errors = []
+    for notification_type, recipient in recipients:
+        try:
+            await graph_send_project_notification(
+                recipient,
+                f"TEST — Bullfrog Projects {notification_type}",
+                body,
+                sender=sender,
+            )
+            results.append({"type": notification_type, "recipient": recipient, "status": "Sent"})
+        except httpx.HTTPStatusError as exc:
+            detail = f"HTTP {exc.response.status_code}"
+            try:
+                graph_error = exc.response.json().get("error", {})
+                detail = graph_error.get("message") or detail
+            except ValueError:
+                pass
+            errors.append(f"{notification_type} to {recipient}: {detail}")
+            results.append({"type": notification_type, "recipient": recipient, "status": "Failed"})
+        except (httpx.HTTPError, KeyError, RuntimeError) as exc:
+            errors.append(f"{notification_type} to {recipient}: {exc}")
+            results.append({"type": notification_type, "recipient": recipient, "status": "Failed"})
+    if errors:
+        raise HTTPException(
+            502,
+            "Notification test had an error: " + " | ".join(errors),
+        )
+    return {"status": "ok", "sender": sender, "results": results}
+
 @app.post("/api/graph/notifications")
 async def graph_notifications(
     request: Request, background_tasks: BackgroundTasks,
