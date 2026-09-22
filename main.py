@@ -1,5 +1,6 @@
 import asyncio
 import html
+import json
 import httpx
 import logging
 import re
@@ -19,10 +20,11 @@ from sqlalchemy import inspect, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from database import Base, SessionLocal, engine, get_db
-from models import CustomerContact, HardwareOrderWorkflow, IntakeEmail, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote, PsaTicketWorkflow
+from models import CustomProjectTemplate, CustomerContact, HardwareOrderWorkflow, IntakeEmail, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote, PsaTicketWorkflow
 from schemas import (
     ContactCreate, ContactOut, ContactUpdate, IntakeConvert, IntakeEmailCreate, IntakeEmailOut,
     MilestoneCreate, MilestoneOut, MilestoneUpdate, NoteOut, ProjectCreate, ProjectOut, ProjectUpdate,
+    ProjectTemplateCreate, ProjectTemplateOut,
 )
 
 STAGES = ["Intake", "Technical Review", "Ready to Schedule", "Implementation", "Testing",
@@ -115,8 +117,43 @@ PHASE_TEMPLATES = {
     ],
 }
 
-def milestone_phase_info(project_type: str, milestone_name: str) -> tuple[str, str]:
-    for phase in PHASE_TEMPLATES.get(project_type, PHASE_TEMPLATES["Other"]):
+def custom_template_phases(db: Session, project_type: str) -> list[dict] | None:
+    template = db.scalar(
+        select(CustomProjectTemplate).where(CustomProjectTemplate.name == project_type)
+    )
+    if not template:
+        return None
+    try:
+        phases = json.loads(template.phases_json)
+    except (TypeError, ValueError):
+        return None
+    return [
+        {
+            "name": str(phase.get("name") or "").strip(),
+            "owner": str(phase.get("owner_role") or phase.get("owner") or "engineer").strip(),
+            "milestones": [str(name).strip() for name in phase.get("milestones", []) if str(name).strip()],
+        }
+        for phase in phases
+        if str(phase.get("name") or "").strip()
+    ]
+
+def project_phase_definitions(project_type: str, db: Session | None = None) -> list[dict]:
+    if project_type in PHASE_TEMPLATES:
+        return PHASE_TEMPLATES[project_type]
+    custom = custom_template_phases(db, project_type) if db else None
+    return custom or PHASE_TEMPLATES["Other"]
+
+def project_template_milestones(project_type: str, db: Session) -> list[tuple[str, str]]:
+    return [
+        (milestone, phase["name"])
+        for phase in project_phase_definitions(project_type, db)
+        for milestone in phase["milestones"]
+    ]
+
+def milestone_phase_info(
+    project_type: str, milestone_name: str, db: Session | None = None
+) -> tuple[str, str]:
+    for phase in project_phase_definitions(project_type, db):
         if milestone_name in phase["milestones"]:
             return phase["name"], phase["owner"]
     return "Additional", "engineer"
@@ -129,7 +166,7 @@ def ensure_project_phase_names():
         for project in projects:
             for milestone in project.milestones:
                 if not milestone.phase_name:
-                    milestone.phase_name = milestone_phase_info(project.project_type, milestone.name)[0]
+                    milestone.phase_name = milestone_phase_info(project.project_type, milestone.name, db)[0]
                     changed = True
         if changed:
             db.commit()
@@ -640,17 +677,22 @@ def revio_phase_dates(project: Project, index: int, total: int) -> tuple[date, d
 async def revio_sync_project_phases(project: Project, db: Session) -> dict:
     if not project.revio_project_id:
         raise RuntimeError("Create the Rev PSA project before syncing phases")
-    phase_status_id = int(
-        (os.getenv("REVIO_PSA_PHASE_STATUS_ID") or "").strip() or "1"
+    planned_phase_status_id = int(
+        (os.getenv("REVIO_PSA_PHASE_PLANNED_STATUS_ID")
+         or os.getenv("REVIO_PSA_PHASE_STATUS_ID")
+         or "").strip() or "1"
     )
-    if not phase_status_id:
-        raise RuntimeError("A Rev PSA phase status is required")
+    active_phase_status_id = int(
+        (os.getenv("REVIO_PSA_PHASE_ACTIVE_STATUS_ID") or "").strip() or "2"
+    )
+    if not planned_phase_status_id or not active_phase_status_id:
+        raise RuntimeError("Rev PSA Active and Planned phase statuses are required")
 
-    definitions = PHASE_TEMPLATES.get(project.project_type, PHASE_TEMPLATES["Other"])
+    definitions = project_phase_definitions(project.project_type, db)
     configured_names = [phase["name"] for phase in definitions]
     grouped: dict[str, list[Milestone]] = {name: [] for name in configured_names}
     for milestone in project.milestones:
-        phase_name = milestone.phase_name or milestone_phase_info(project.project_type, milestone.name)[0]
+        phase_name = milestone.phase_name or milestone_phase_info(project.project_type, milestone.name, db)[0]
         milestone.phase_name = phase_name
         grouped.setdefault(phase_name, []).append(milestone)
     phase_names = [name for name in configured_names if grouped.get(name)]
@@ -670,25 +712,32 @@ async def revio_sync_project_phases(project: Project, db: Session) -> dict:
         completed = sum(1 for item in milestones if item.status == "Complete")
         progress = round((completed / len(milestones)) * 100, 2) if milestones else 0
 
+        phase_status_id = active_phase_status_id if index == 0 else planned_phase_status_id
+        phase_payload = {
+            "phaseName": phase_name,
+            "phaseSequence": index + 1,
+            "phaseStatusId": phase_status_id,
+            "startDate": revio_datetime(phase_start),
+            "endDate": revio_datetime(phase_end),
+            "description": f"{phase_name} phase for {project.project_name}",
+            "phaseOwnerId": owner_id,
+            "budgetAllocation": (project.project_budget / total_phases) if project.project_budget is not None else None,
+            "plannedHours": (((project.estimated_hours if project.estimated_hours is not None else project.budget_hours) / total_phases) if (project.estimated_hours is not None or project.budget_hours is not None) else None),
+            "isAtRisk": project.risk == "Red",
+            "progressPercent": progress,
+            "baselineStartDate": revio_datetime(phase_start),
+            "baselineEndDate": revio_datetime(phase_end),
+        }
+        phase_payload = {key: value for key, value in phase_payload.items() if value is not None}
+
         if existing_phase_id:
             phase_id = existing_phase_id
+            await revio_project_api_request(
+                "PUT",
+                f"/project-management/api/v1/phases/{quote(str(phase_id), safe='')}",
+                json_body=phase_payload,
+            )
         else:
-            phase_payload = {
-                "phaseName": phase_name,
-                "phaseSequence": index + 1,
-                "phaseStatusId": phase_status_id,
-                "startDate": revio_datetime(phase_start),
-                "endDate": revio_datetime(phase_end),
-                "description": f"{phase_name} phase for {project.project_name}",
-                "phaseOwnerId": owner_id,
-                "budgetAllocation": (project.project_budget / total_phases) if project.project_budget is not None else None,
-                "plannedHours": (((project.estimated_hours if project.estimated_hours is not None else project.budget_hours) / total_phases) if (project.estimated_hours is not None or project.budget_hours is not None) else None),
-                "isAtRisk": project.risk == "Red",
-                "progressPercent": progress,
-                "baselineStartDate": revio_datetime(phase_start),
-                "baselineEndDate": revio_datetime(phase_end),
-            }
-            phase_payload = {key: value for key, value in phase_payload.items() if value is not None}
             phase_response = await revio_project_api_request(
                 "POST",
                 f"/project-management/api/v1/projects/{quote(str(project.revio_project_id), safe='')}/phases",
@@ -2154,8 +2203,8 @@ def convert_intake(intake_id: int, payload: IntakeConvert, request: Request, db:
     project = Project(**payload.project.model_dump())
     db.add(project)
     db.flush()
-    for name in TEMPLATES.get(project.project_type, TEMPLATES["Other"]):
-        db.add(Milestone(project_id=project.id, name=name))
+    for name, phase_name in project_template_milestones(project.project_type, db):
+        db.add(Milestone(project_id=project.id, name=name, phase_name=phase_name))
     record_activity(
         db, project.id, request, "project_created",
         f"Created project from email intake: {item.subject}",
@@ -2316,10 +2365,115 @@ async def sync_revio_project_phases(project_id: int, request: Request, db: Sessi
         db.commit()
         raise HTTPException(502, str(exc))
 
+def serialize_project_template(template: CustomProjectTemplate) -> dict:
+    try:
+        phases = json.loads(template.phases_json)
+    except (TypeError, ValueError):
+        phases = []
+    return {
+        "id": template.id,
+        "name": template.name,
+        "description": template.description,
+        "phases": phases,
+        "created_at": template.created_at,
+        "updated_at": template.updated_at,
+    }
+
+def normalized_project_template(payload: ProjectTemplateCreate) -> tuple[str, str | None, list[dict]]:
+    name = payload.name.strip()
+    description = payload.description.strip() if payload.description and payload.description.strip() else None
+    phases: list[dict] = []
+    phase_names: set[str] = set()
+    milestone_names: set[str] = set()
+    for item in payload.phases:
+        phase_name = item.name.strip()
+        phase_key = phase_name.casefold()
+        if phase_key in phase_names:
+            raise HTTPException(400, f"Phase name {phase_name} is duplicated")
+        phase_names.add(phase_key)
+        owner_role = item.owner_role.strip().lower()
+        if owner_role not in {"csm", "engineer", "sales"}:
+            raise HTTPException(400, f"Invalid owner role for phase {phase_name}")
+        milestones = []
+        for raw_name in item.milestones:
+            milestone_name = raw_name.strip()
+            if not milestone_name:
+                continue
+            milestone_key = milestone_name.casefold()
+            if milestone_key in milestone_names:
+                raise HTTPException(400, f"Milestone name {milestone_name} is duplicated")
+            milestone_names.add(milestone_key)
+            milestones.append(milestone_name)
+        if not milestones:
+            raise HTTPException(400, f"Phase {phase_name} needs at least one milestone")
+        phases.append({"name": phase_name, "owner_role": owner_role, "milestones": milestones})
+    return name, description, phases
+
+def ensure_template_name_available(
+    db: Session, name: str, exclude_id: int | None = None
+):
+    if name.casefold() in {item.casefold() for item in PROJECT_TYPES}:
+        raise HTTPException(409, "That name is already used by a built-in project type")
+    for item in db.scalars(select(CustomProjectTemplate)).all():
+        if item.id != exclude_id and item.name.casefold() == name.casefold():
+            raise HTTPException(409, "A custom project type with that name already exists")
+
+@app.get("/api/project-templates", response_model=list[ProjectTemplateOut])
+def list_project_templates(db: Session = Depends(get_db)):
+    items = db.scalars(select(CustomProjectTemplate).order_by(CustomProjectTemplate.name)).all()
+    return [serialize_project_template(item) for item in items]
+
+@app.post("/api/project-templates", response_model=ProjectTemplateOut, status_code=status.HTTP_201_CREATED)
+def create_project_template(payload: ProjectTemplateCreate, db: Session = Depends(get_db)):
+    name, description, phases = normalized_project_template(payload)
+    ensure_template_name_available(db, name)
+    item = CustomProjectTemplate(
+        name=name, description=description, phases_json=json.dumps(phases)
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return serialize_project_template(item)
+
+@app.put("/api/project-templates/{template_id}", response_model=ProjectTemplateOut)
+def update_project_template(
+    template_id: int, payload: ProjectTemplateCreate, db: Session = Depends(get_db)
+):
+    item = db.get(CustomProjectTemplate, template_id)
+    if not item:
+        raise HTTPException(404, "Custom project type not found")
+    name, description, phases = normalized_project_template(payload)
+    ensure_template_name_available(db, name, exclude_id=template_id)
+    if name != item.name and db.scalar(select(Project.id).where(Project.project_type == item.name).limit(1)):
+        raise HTTPException(409, "This project type is already in use and cannot be renamed")
+    item.name = name
+    item.description = description
+    item.phases_json = json.dumps(phases)
+    db.commit()
+    db.refresh(item)
+    return serialize_project_template(item)
+
+@app.delete("/api/project-templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project_template(template_id: int, db: Session = Depends(get_db)):
+    item = db.get(CustomProjectTemplate, template_id)
+    if not item:
+        raise HTTPException(404, "Custom project type not found")
+    if db.scalar(select(Project.id).where(Project.project_type == item.name).limit(1)):
+        raise HTTPException(409, "This project type is in use and cannot be deleted")
+    db.delete(item)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
 @app.get("/api/options")
-def options():
+def options(db: Session = Depends(get_db)):
+    custom_items = db.scalars(select(CustomProjectTemplate).order_by(CustomProjectTemplate.name)).all()
+    custom_types = [item.name for item in custom_items]
+    templates = dict(TEMPLATES)
+    for item in custom_items:
+        phases = custom_template_phases(db, item.name) or []
+        templates[item.name] = [name for phase in phases for name in phase["milestones"]]
     return {"stages": STAGES, "risks": RISKS, "priorities": PRIORITIES,
-            "project_types": PROJECT_TYPES, "templates": TEMPLATES,
+            "project_types": PROJECT_TYPES + custom_types, "templates": templates,
             "engineers": ENGINEERS, "sales_owners": SALES_OWNERS,
             "customer_success_managers": CUSTOMER_SUCCESS_MANAGERS,
             "next_action_owners": NEXT_ACTION_OWNERS}
@@ -2345,8 +2499,8 @@ def create_project(payload: ProjectCreate, request: Request, db: Session = Depen
     project = Project(**payload.model_dump())
     db.add(project)
     db.flush()
-    for name in TEMPLATES.get(project.project_type, TEMPLATES["Other"]):
-        db.add(Milestone(project_id=project.id, name=name))
+    for name, phase_name in project_template_milestones(project.project_type, db):
+        db.add(Milestone(project_id=project.id, name=name, phase_name=phase_name))
     record_activity(db, project.id, request, "project_created", f"Created project {project.project_name}")
     db.commit()
     return db.scalar(project_query().where(Project.id == project.id))
