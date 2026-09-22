@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
@@ -13,6 +13,12 @@ class Project(Base):
     customer: Mapped[str] = mapped_column(String(160), index=True)
     customer_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     quote_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    revio_project_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    revio_project_status_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    revio_project_priority_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    revio_sync_status: Mapped[str] = mapped_column(String(40), default="Not Created")
+    revio_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revio_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     project_name: Mapped[str] = mapped_column(String(200))
     project_type: Mapped[str] = mapped_column(String(60), index=True)
     technical_manager: Mapped[str] = mapped_column(String(100), default="Chad")
@@ -21,7 +27,13 @@ class Project(Base):
     stage: Mapped[str] = mapped_column(String(60), default="Intake", index=True)
     risk: Mapped[str] = mapped_column(String(20), default="Green", index=True)
     priority: Mapped[str] = mapped_column(String(20), default="Normal")
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     target_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    project_budget: Mapped[float | None] = mapped_column(Float, nullable=True)
+    budget_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    estimated_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_billable: Mapped[bool] = mapped_column(Boolean, default=True)
+    project_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     next_action: Mapped[str | None] = mapped_column(String(300), nullable=True)
     next_action_owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
     next_action_due: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -53,6 +65,7 @@ class Milestone(Base):
     status: Mapped[str] = mapped_column(String(30), default="Not Started")
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     completed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    revio_milestone_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     project: Mapped[Project] = relationship(back_populates="milestones")
 
 class ProjectNote(Base):
