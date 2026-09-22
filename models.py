@@ -62,10 +62,12 @@ class Milestone(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(200))
+    phase_name: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(30), default="Not Started")
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     completed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     revio_milestone_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    revio_phase_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     project: Mapped[Project] = relationship(back_populates="milestones")
 
 class ProjectNote(Base):
