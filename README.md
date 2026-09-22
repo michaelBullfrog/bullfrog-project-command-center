@@ -112,3 +112,12 @@ Primary endpoints:
 ## V1 security note
 
 Webex OAuth protects the application and limits access to the configured Bullfrog email domain. For stronger enforcement, configure WEBEX_ALLOWED_ORG_ID in addition to the domain restriction.
+
+
+## Rev PSA project creation
+
+The project form can create a complete Rev PSA project from the Bullfrog dashboard. It uses the existing `REVIO_API_KEY` token exchange and the project-management API at `REVIO_PROJECT_BASE_URL` (default: `https://apim.psarev.io`).
+
+The form loads Rev PSA project statuses and priorities dynamically, sends the customer, dates, budget, hours, billable flag, owner, description, notes, and matching team members, then creates each Bullfrog checklist item as a Rev PSA project milestone. The returned Rev PSA Project ID and milestone IDs are saved locally. Project creation can be retried safely when the Rev PSA Project ID has not yet been returned.
+
+Project work-item endpoints only link existing Rev PSA tickets or calendar tasks. Milestone ticket automation remains disabled unless `REVIO_PSA_TICKET_AUTOMATION_ENABLED=true`.
