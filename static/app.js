@@ -42,7 +42,11 @@ function fillOptions(){
  });
  const revioStatus=form.elements.revio_project_status_id,revioPriority=form.elements.revio_project_priority_id;
  revioStatus.innerHTML='<option value="">Select Rev PSA status…</option>'+state.revioProjectOptions.statuses.map(v=>'<option value="'+v.id+'">'+safe(v.name)+'</option>').join("");
- revioPriority.innerHTML='<option value="">No Rev PSA priority</option>'+state.revioProjectOptions.priorities.map(v=>'<option value="'+v.id+'">'+safe(v.name)+'</option>').join("");
+ const currentRevioPriority=revioPriority.value;
+ revioPriority.innerHTML=state.revioProjectOptions.priorities.map(v=>'<option value="'+v.id+'">'+safe(v.name)+'</option>').join("");
+ const mediumPriority=state.revioProjectOptions.priorities.find(v=>String(v.name).trim().toLowerCase()==="medium");
+ if(state.revioProjectOptions.priorities.some(v=>String(v.id)===String(currentRevioPriority)))revioPriority.value=currentRevioPriority;
+ else if(mediumPriority)revioPriority.value=String(mediumPriority.id);
  if(state.revioProjectOptionsError){
   $("#revio-project-status").textContent="Rev PSA project options could not load: "+state.revioProjectOptionsError;
   $("#revio-project-status").className="lookup-status span-2 error";
@@ -148,6 +152,10 @@ function openForm(project=null,intakeId=null){
  f.elements.is_billable.checked=project?project.is_billable!==false:true;
  f.elements.create_in_revio.checked=!project?.revio_project_id&&!state.revioProjectOptionsError;
  if(project)Object.entries(project).forEach(([k,v])=>{if(f.elements[k]&&k!=="create_in_revio"){if(f.elements[k].type==="checkbox")f.elements[k].checked=!!v;else f.elements[k].value=v??""}});
+ if(!project?.revio_project_priority_id){
+  const mediumPriority=state.revioProjectOptions.priorities.find(v=>String(v.name).trim().toLowerCase()==="medium");
+  if(mediumPriority)f.elements.revio_project_priority_id.value=String(mediumPriority.id)
+ }
  $("#create-revio-row").classList.toggle("hidden",!!project?.revio_project_id);
  if(project?.revio_project_id){$("#revio-project-status").textContent="✓ Linked to Rev PSA Project "+project.revio_project_id;$("#revio-project-status").className="lookup-status span-2 success"}
  $("#project-modal").classList.remove("hidden");if(project?.customer)loadSignedQuotes(project.customer,project.quote_id||"")
@@ -192,7 +200,63 @@ async function openDetail(id,initialTab="milestones"){
 }
 function close(id){$("#"+id).classList.add("hidden")}
 async function refresh(){state.projects=await api("/api/projects");try{state.intake=await api("/api/intake");state.intakeError=null}catch(e){console.error("Project intake:",e);state.intake=[];state.intakeError=e.message}renderAll()}
-$("#project-form").onsubmit=async e=>{e.preventDefault();const f=e.target,d=Object.fromEntries(new FormData(f));const createInRevio=f.elements.create_in_revio.checked;delete d.create_in_revio;d.is_billable=f.elements.is_billable.checked;["start_date","target_date","next_action_due"].forEach(k=>{if(!d[k])delete d[k]});["revio_project_status_id","revio_project_priority_id","project_budget","budget_hours","estimated_hours"].forEach(k=>{if(d[k]==="")delete d[k];else d[k]=Number(d[k])});if(createInRevio&&!d.revio_project_status_id){$("#revio-project-status").textContent="Select a Rev PSA Project Status before creating the Rev PSA project.";$("#revio-project-status").className="lookup-status span-2 error";return}const id=$("#project-id").value,intakeId=$("#intake-id").value;const url=intakeId?"/api/intake/"+intakeId+"/convert":id?"/api/projects/"+id:"/api/projects";const body=intakeId?{project:d}:d;const saved=await api(url,{method:id?"PUT":"POST",body:JSON.stringify(body)});let revioMessage="";if(id&&saved.revio_project_id){try{const synced=await api("/api/projects/"+saved.id+"/revio/sync",{method:"PUT"});revioMessage=synced.project_hours!=null?" Rev PSA updated to "+synced.project_hours+" project hours.":" Rev PSA project updated."}catch(err){revioMessage=" Bullfrog project saved, but Rev PSA update failed: "+err.message}}if(createInRevio&&!saved.revio_project_id){try{const result=await api("/api/projects/"+saved.id+"/revio/create",{method:"POST"});revioMessage=" Rev PSA Project "+result.revio_project_id+" created with "+result.phases_created+" phases and "+result.milestones_created+" milestones."}catch(err){revioMessage=" Bullfrog project saved, but Rev PSA creation failed: "+err.message}}close("project-modal");await refresh();if(intakeId)setView("projects");toast((id?"Project updated":intakeId?"Intake converted to project":"Project created")+revioMessage)};
+$("#project-form").onsubmit=async e=>{
+ e.preventDefault();
+ const f=e.target,d=Object.fromEntries(new FormData(f));
+ const createInRevio=f.elements.create_in_revio.checked;
+ delete d.create_in_revio;
+ d.is_billable=f.elements.is_billable.checked;
+ ["start_date","target_date","next_action_due"].forEach(k=>{if(!d[k])delete d[k]});
+ ["revio_project_status_id","revio_project_priority_id","project_budget","budget_hours","estimated_hours"].forEach(k=>{if(d[k]==="")delete d[k];else d[k]=Number(d[k])});
+ const statusEl=$("#revio-project-status");
+ if(createInRevio&&!d.revio_project_status_id){
+  statusEl.textContent="Select a Rev PSA Project Status before creating the Rev PSA project.";
+  statusEl.className="lookup-status span-2 error";
+  return
+ }
+ const id=$("#project-id").value,intakeId=$("#intake-id").value;
+ const url=intakeId?"/api/intake/"+intakeId+"/convert":id?"/api/projects/"+id:"/api/projects";
+ const body=intakeId?{project:d}:d;
+ const submitButton=f.querySelector('button[type="submit"]');
+ const originalButtonText=submitButton.textContent;
+ submitButton.disabled=true;
+ submitButton.innerHTML='<span class="button-spinner"></span> '+(id?"Saving Project…":"Creating Project…");
+ f.setAttribute("aria-busy","true");
+ statusEl.textContent=id?"Saving your changes in Bullfrog Projects…":"Creating the project in Bullfrog Projects…";
+ statusEl.className="lookup-status span-2 working";
+ try{
+  const saved=await api(url,{method:id?"PUT":"POST",body:JSON.stringify(body)});
+  let revioMessage="";
+  if(id&&saved.revio_project_id){
+   statusEl.textContent="Bullfrog project saved. Updating the linked Rev PSA project…";
+   try{
+    const synced=await api("/api/projects/"+saved.id+"/revio/sync",{method:"PUT"});
+    revioMessage=synced.project_hours!=null?" Rev PSA updated to "+synced.project_hours+" project hours.":" Rev PSA project updated."
+   }catch(err){revioMessage=" Bullfrog project saved, but Rev PSA update failed: "+err.message}
+  }
+  if(createInRevio&&!saved.revio_project_id){
+   statusEl.textContent="Bullfrog project saved. Creating its project, phases, and milestones in Rev PSA…";
+   submitButton.innerHTML='<span class="button-spinner"></span> Creating in Rev PSA…';
+   try{
+    const result=await api("/api/projects/"+saved.id+"/revio/create",{method:"POST"});
+    revioMessage=" Rev PSA Project "+result.revio_project_id+" created with "+result.phases_created+" phases and "+result.milestones_created+" milestones."
+   }catch(err){revioMessage=" Bullfrog project saved, but Rev PSA creation failed: "+err.message}
+  }
+  statusEl.textContent="Finishing up and refreshing the dashboard…";
+  await refresh();
+  close("project-modal");
+  if(intakeId)setView("projects");
+  toast((id?"Project updated":intakeId?"Intake converted to project":"Project created")+revioMessage)
+ }catch(err){
+  statusEl.textContent="Project save failed: "+err.message;
+  statusEl.className="lookup-status span-2 error";
+  toast("Project save failed: "+err.message)
+ }finally{
+  submitButton.disabled=false;
+  submitButton.textContent=originalButtonText;
+  f.removeAttribute("aria-busy")
+ }
+};
 const templateForm=$("#template-form");
 if(templateForm)templateForm.onsubmit=async e=>{e.preventDefault();const phases=$$(".template-phase-editor").map(editor=>({name:editor.querySelector(".template-phase-name").value.trim(),owner_role:editor.querySelector(".template-phase-owner").value,milestones:editor.querySelector(".template-phase-milestones").value.split("\n").map(v=>v.trim()).filter(Boolean)}));if(!phases.length){toast("Add at least one phase");return}const form=e.target,payload={name:form.elements.name.value.trim(),description:form.elements.description.value.trim()||null,phases},id=$("#template-id").value;try{await api(id?"/api/project-templates/"+id:"/api/project-templates",{method:id?"PUT":"POST",body:JSON.stringify(payload)});close("template-modal");await refreshTemplates();toast(id?"Project type updated":"Project type created")}catch(err){toast(err.message)}};
 const newTemplateButton=$("#new-template"),addTemplatePhaseButton=$("#add-template-phase");
