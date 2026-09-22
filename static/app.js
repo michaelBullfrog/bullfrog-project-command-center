@@ -300,6 +300,23 @@ if(addTemplatePhaseButton)addTemplatePhaseButton.onclick=()=>addTemplatePhase();
 $$(".nav-link").forEach(n=>n.onclick=()=>setView(n.dataset.view));$$("[data-go]").forEach(n=>n.onclick=()=>setView(n.dataset.go));
 $("#lookup-customer").onclick=async()=>{const form=$("#project-form"),customerId=form.elements.customer_id.value.trim(),button=$("#lookup-customer"),statusEl=$("#customer-lookup-status");if(!/^\d+$/.test(customerId)){statusEl.textContent="Enter a numeric Customer ID first.";statusEl.className="lookup-status error";return}button.disabled=true;button.textContent="Searching…";statusEl.textContent="";resetQuoteOptions();try{const result=await api("/api/revio/customers/"+encodeURIComponent(customerId));form.elements.customer.value=result.customer_name;statusEl.textContent="✓ Customer found: "+result.customer_name;statusEl.className="lookup-status success";button.textContent="Loading quotes…";await loadSignedQuotes(result.customer_name);form.elements.quote_id.focus()}catch(e){statusEl.textContent=e.message;statusEl.className="lookup-status error"}finally{button.disabled=false;button.textContent="Search Rev PSA"}};
 $("#sync-intake").onclick=async()=>{const button=$("#sync-intake");button.disabled=true;button.textContent="Syncing…";try{const result=await api("/api/graph/sync",{method:"POST"});await loadIntake();toast(result.imported?result.imported+" email(s) added to Project Intake":"Inbox is already up to date")}catch(e){toast("Inbox sync failed: "+e.message)}finally{button.disabled=false;button.textContent="↻ Sync Inbox"}};
+const testNotifications=$("#test-notifications");
+if(testNotifications)testNotifications.onclick=async()=>{
+ if(!confirm("Send test emails from michael@bullfrog.net to carrie@bullfrog.net and psanotification@bullfrog.net?"))return;
+ const original=testNotifications.textContent;
+ testNotifications.disabled=true;
+ testNotifications.innerHTML='<span class="button-spinner"></span> Sending tests…';
+ try{
+  const result=await api("/api/notifications/test",{method:"POST"});
+  const delivered=(result.results||[]).map(item=>item.recipient).join(" and ");
+  toast("Test notifications sent to "+delivered)
+ }catch(e){
+  toast("Notification test failed: "+e.message)
+ }finally{
+  testNotifications.disabled=false;
+  testNotifications.textContent=original
+ }
+};
 ["header-new","sidebar-new"].forEach(id=>$("#"+id).onclick=()=>openForm());$$("[data-close]").forEach(x=>x.onclick=()=>close(x.dataset.close));
 ["search","filter-stage","filter-risk","filter-type"].forEach(id=>$("#"+id).addEventListener(id==="search"?"input":"change",()=>{renderProjects();bindRows()}));
 $$(".modal").forEach(m=>m.addEventListener("click",e=>{if(e.target===m)close(m.id)}));
