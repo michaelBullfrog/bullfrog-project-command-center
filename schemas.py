@@ -15,6 +15,7 @@ class MilestoneOut(MilestoneCreate):
     id: int
     project_id: int
     completed_date: date | None = None
+    revio_milestone_id: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 class AttachmentOut(BaseModel):
@@ -74,6 +75,12 @@ class ProjectBase(BaseModel):
     customer: str = Field(min_length=1, max_length=160)
     customer_id: str | None = Field(default=None, max_length=50)
     quote_id: str | None = Field(default=None, max_length=50)
+    revio_project_id: str | None = Field(default=None, max_length=50)
+    revio_project_status_id: int | None = None
+    revio_project_priority_id: int | None = None
+    revio_sync_status: str = "Not Created"
+    revio_sync_error: str | None = None
+    revio_synced_at: datetime | None = None
     project_name: str = Field(min_length=1, max_length=200)
     project_type: str = "Other"
     technical_manager: str = "Chad"
@@ -82,7 +89,13 @@ class ProjectBase(BaseModel):
     stage: str = "Intake"
     risk: str = "Green"
     priority: str = "Normal"
+    start_date: date | None = None
     target_date: date | None = None
+    project_budget: float | None = None
+    budget_hours: float | None = None
+    estimated_hours: float | None = None
+    is_billable: bool = True
+    project_notes: str | None = None
     next_action: str | None = None
     next_action_owner: str | None = None
     next_action_due: date | None = None
@@ -97,6 +110,8 @@ class ProjectUpdate(BaseModel):
     customer: str | None = None
     customer_id: str | None = None
     quote_id: str | None = None
+    revio_project_status_id: int | None = None
+    revio_project_priority_id: int | None = None
     project_name: str | None = None
     project_type: str | None = None
     technical_manager: str | None = None
@@ -105,7 +120,13 @@ class ProjectUpdate(BaseModel):
     stage: str | None = None
     risk: str | None = None
     priority: str | None = None
+    start_date: date | None = None
     target_date: date | None = None
+    project_budget: float | None = None
+    budget_hours: float | None = None
+    estimated_hours: float | None = None
+    is_billable: bool | None = None
+    project_notes: str | None = None
     next_action: str | None = None
     next_action_owner: str | None = None
     next_action_due: date | None = None
