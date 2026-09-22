@@ -3,6 +3,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class MilestoneCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    phase_name: str | None = None
     status: str = "Not Started"
     due_date: date | None = None
 
@@ -16,6 +17,7 @@ class MilestoneOut(MilestoneCreate):
     project_id: int
     completed_date: date | None = None
     revio_milestone_id: str | None = None
+    revio_phase_id: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 class AttachmentOut(BaseModel):
