@@ -67,7 +67,7 @@ logger = logging.getLogger("bullfrog.graph")
 TEMPLATES = {
     "Webex Calling": [
         "Signed Proposal", "Internal Handoff", "Kickoff Call", "Call Flow", "User Spreadsheet",
-        "LOA Document", "Port Submitted", "Hardware Payment Check", "Hardware Ordered", "FOC Received", "Port Complete",
+        "LOA Document", "Customer CNAM Obtained", "Port Submitted", "Hardware Payment Check", "Hardware Ordered", "FOC Received", "Port Complete",
         "Hardware Delivered", "Devices Registered", "Users Added", "Go Live Follow Up", "Go Live", "Closeout",
     ],
     "Webex Contact Center": [
@@ -90,7 +90,7 @@ PHASE_TEMPLATES = {
         {"name": "Planning & Handoff", "owner": "csm", "milestones": ["Signed Proposal", "Internal Handoff", "Kickoff Call"]},
         {"name": "Design & Discovery", "owner": "engineer", "milestones": ["Call Flow", "User Spreadsheet", "LOA Document"]},
         {"name": "Hardware & Provisioning", "owner": "engineer", "milestones": ["Hardware Payment Check", "Hardware Ordered", "Hardware Delivered", "Devices Registered", "Users Added"]},
-        {"name": "Number Porting", "owner": "engineer", "milestones": ["Port Submitted", "FOC Received", "Port Complete"]},
+        {"name": "Number Porting", "owner": "engineer", "milestones": ["Customer CNAM Obtained", "Port Submitted", "FOC Received", "Port Complete"]},
         {"name": "Go Live & Closeout", "owner": "csm", "milestones": ["Go Live Follow Up", "Go Live", "Closeout"]},
     ],
     "Webex Contact Center": [
@@ -327,7 +327,7 @@ def ensure_project_phase_names():
         db.close()
 
 WORKFLOW_MILESTONES = {
-    "Webex Calling": ["Signed Proposal", "Kickoff Call", "LOA Document", "FOC Received", "Port Complete",
+    "Webex Calling": ["Signed Proposal", "Kickoff Call", "LOA Document", "Customer CNAM Obtained", "FOC Received", "Port Complete",
                       "Hardware Payment Check", "Hardware Ordered", "Hardware Delivered", "User Spreadsheet"],
     "Webex Contact Center": ["Signed Proposal", "Kickoff Call", "User Spreadsheet"],
     "Meraki": ["Signed Proposal", "Kickoff Call", "Hardware Payment Check", "Hardware Ordered", "Hardware Delivered"],
@@ -2100,7 +2100,11 @@ def ensure_project_workflow_milestones():
             existing_names = {normalize_customer_name(item.name) for item in existing_items}
             for name in WORKFLOW_MILESTONES.get(project.project_type, []):
                 if normalize_customer_name(name) not in existing_names:
-                    db.add(Milestone(project_id=project.id, name=name))
+                    db.add(Milestone(
+                        project_id=project.id,
+                        name=name,
+                        phase_name=milestone_phase_info(project.project_type, name, db)[0],
+                    ))
                     existing_names.add(normalize_customer_name(name))
 
             # Balance checks that were previously started by Signed Proposal
