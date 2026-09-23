@@ -2363,7 +2363,7 @@ def parse_revio_milestone_date(value) -> date | None:
 
 def revio_milestone_complete(item: dict) -> bool:
     completed = revio_value(
-        item, "completedDate", "dateCompleted", "completionDate", "isCompleted"
+        item, "completedDate", "dateCompleted", "completionDate", "completedAt", "isCompleted"
     )
     if isinstance(completed, bool):
         return completed
@@ -3511,9 +3511,31 @@ async def sync_revio_milestone_completion(
     if not project.revio_project_id:
         return False
 
-    # Milestones added after the Rev project was first created may not have a
-    # Rev ID yet. Sync the phase structure first so the completion update has a
-    # concrete Rev PSA milestone to target.
+    # Older projects can already contain the milestone in Rev PSA without the
+    # local record retaining its Rev ID. Reconcile by name first so completing
+    # it does not create a duplicate milestone.
+    if not item.revio_milestone_id:
+        response = await revio_project_api_request(
+            "GET",
+            f"/project-management/api/v1/projects/{quote(str(project.revio_project_id), safe='')}/milestones",
+            params={"archivedFilter": "Active", "page": 1, "pageSize": 100},
+        )
+        normalized_name = normalize_customer_name(item.name)
+        match = next((
+            candidate for candidate in revio_records(response)
+            if normalize_customer_name(str(revio_value(
+                candidate, "milestoneName", "name", "title"
+            ) or "")) == normalized_name
+        ), None)
+        if match:
+            matched_id = revio_value(
+                match, "milestoneId", "projectMilestoneId", "milestone_id", "id"
+            )
+            if matched_id not in (None, ""):
+                item.revio_milestone_id = str(matched_id)
+
+    # A milestone added after project creation may truly be absent from Rev.
+    # Sync the phase structure to create and map it before completing it.
     if not item.revio_milestone_id:
         await revio_sync_project_phases(project, db)
         db.flush()
@@ -3527,8 +3549,19 @@ async def sync_revio_milestone_completion(
         await revio_project_api_request(
             "PATCH",
             f"/project-management/api/v1/milestones/{milestone_id}/complete",
-            json_body={"completedDate": revio_datetime(item.completed_date or date.today())},
+            json_body={},
         )
+        verification = await revio_project_api_request(
+            "GET",
+            f"/project-management/api/v1/milestones/{milestone_id}",
+        )
+        verified = verification.get("data", verification)
+        if isinstance(verified, dict) and isinstance(verified.get("milestone"), dict):
+            verified = verified["milestone"]
+        if not isinstance(verified, dict) or not revio_milestone_complete(verified):
+            raise RuntimeError(
+                f"Rev PSA did not confirm {item.name} as complete after the update."
+            )
     else:
         await revio_project_api_request(
             "PATCH",
