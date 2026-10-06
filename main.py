@@ -3435,8 +3435,18 @@ def require_mcp_service_token(request: Request):
     expected = (os.getenv("BULLFROG_MCP_SERVICE_TOKEN") or "").strip()
     authorization = request.headers.get("authorization", "")
     supplied = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-    if not expected or not supplied or not secrets.compare_digest(supplied, expected):
-        raise HTTPException(status_code=401, detail="A valid service Bearer token is required")
+    if not expected:
+        logger.warning("MCP service auth failed: BULLFROG_MCP_SERVICE_TOKEN is not configured")
+        raise HTTPException(status_code=503, detail="MCP service authentication is not configured")
+    if not supplied:
+        logger.warning("MCP service auth failed: Authorization Bearer token was not supplied")
+        raise HTTPException(status_code=401, detail="Service Bearer token was not supplied")
+    if not secrets.compare_digest(supplied, expected):
+        logger.warning(
+            "MCP service auth failed: token mismatch (supplied_length=%s expected_length=%s)",
+            len(supplied), len(expected),
+        )
+        raise HTTPException(status_code=401, detail="Service Bearer token did not match")
 
 
 @app.get("/api/mcp/customers/{customer_id}/projects")
