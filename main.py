@@ -2764,6 +2764,7 @@ async def require_webex_login(request: Request, call_next):
         or path == "/auth/callback"
         or path == "/api/intake/email"
         or path == "/api/graph/notifications"
+        or path.startswith("/api/mcp/")
         or path.startswith("/static/")
     )
     if public_path:
