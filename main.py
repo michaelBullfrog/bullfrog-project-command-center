@@ -598,6 +598,8 @@ def ensure_database_schema():
         "revio_milestone_id": "VARCHAR(50)",
         "revio_phase_id": "VARCHAR(50)",
         "phase_name": "VARCHAR(120)",
+        "start_date": "DATE",
+        "end_date": "DATE",
     }
     for column_name, column_type in milestone_additions.items():
         if column_name not in milestone_columns:
@@ -612,7 +614,7 @@ def revio_records(payload) -> list[dict]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
     if isinstance(data, dict):
-        for key in ("items", "customers", "records", "results", "data"):
+        for key in ("items", "customers", "records", "results", "milestones", "data"):
             items = data.get(key)
             if isinstance(items, list):
                 return [item for item in items if isinstance(item, dict)]
@@ -907,6 +909,12 @@ async def revio_sync_project_phases(project: Project, db: Session) -> dict:
         for milestone in milestones:
             milestone.revio_phase_id = str(phase_id)
             target = milestone.due_date or phase_end or project.target_date or phase_start
+            # Preserve the schedule sent to Rev immediately. The read-back below
+            # then replaces these fallbacks with Rev's authoritative dates when
+            # the milestone response includes them.
+            milestone.start_date = phase_start
+            milestone.end_date = target
+            milestone.due_date = target
             milestone_payload = {
                 "milestoneName": milestone.name,
                 "description": f"{phase_name} milestone for {project.project_name}",
@@ -937,6 +945,55 @@ async def revio_sync_project_phases(project: Project, db: Session) -> dict:
                 milestone.revio_milestone_id = str(milestone_id)
                 milestones_created += 1
 
+    milestone_dates_updated = 0
+    try:
+        response = await revio_project_api_request(
+            "GET",
+            f"/project-management/api/v1/projects/{quote(str(project.revio_project_id), safe='')}/milestones",
+            params={"archivedFilter": "Active", "page": 1, "pageSize": 100},
+        )
+        revio_milestones = revio_records(response)
+        by_id = {
+            str(revio_value(item, "milestoneId", "projectMilestoneId", "milestone_id", "id")): item
+            for item in revio_milestones
+            if revio_value(item, "milestoneId", "projectMilestoneId", "milestone_id", "id") not in (None, "")
+        }
+        by_name = {
+            normalize_customer_name(str(revio_value(item, "milestoneName", "name", "title") or "")): item
+            for item in revio_milestones
+        }
+        for milestone in project.milestones:
+            revio_item = by_id.get(str(milestone.revio_milestone_id)) or by_name.get(
+                normalize_customer_name(milestone.name)
+            )
+            if not revio_item:
+                continue
+            revio_start = parse_revio_milestone_date(revio_value(
+                revio_item, "startDate", "plannedStartDate", "baselineStartDate", "beginDate"
+            ))
+            revio_end = parse_revio_milestone_date(revio_value(
+                revio_item, "endDate", "targetDate", "dueDate", "plannedEndDate", "baselineEndDate"
+            ))
+            revio_completed = parse_revio_milestone_date(revio_value(
+                revio_item, "completedDate", "dateCompleted", "completionDate", "completedAt"
+            ))
+            if revio_start:
+                milestone.start_date = revio_start
+            if revio_end:
+                milestone.end_date = revio_end
+                milestone.due_date = revio_end
+            if revio_completed:
+                milestone.completed_date = revio_completed
+            if revio_start or revio_end or revio_completed:
+                milestone_dates_updated += 1
+    except (httpx.HTTPError, KeyError, TypeError, ValueError):
+        # The schedule sent above remains visible even if Rev's immediate
+        # read-back is temporarily unavailable.
+        logger.exception(
+            "Unable to read milestone dates back from Rev PSA project %s",
+            project.revio_project_id,
+        )
+
     project.revio_sync_status = "Synced with Phases"
     project.revio_sync_error = None
     project.revio_synced_at = datetime.utcnow()
@@ -947,6 +1004,7 @@ async def revio_sync_project_phases(project: Project, db: Session) -> dict:
         "phases_created": phases_created,
         "milestones_created": milestones_created,
         "milestones_moved": milestones_moved,
+        "milestone_dates_updated": milestone_dates_updated,
     }
 
 async def revio_create_project_with_milestones(project: Project, db: Session) -> dict:

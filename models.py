@@ -77,6 +77,8 @@ class Milestone(Base):
     name: Mapped[str] = mapped_column(String(200))
     phase_name: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(30), default="Not Started")
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     completed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     revio_milestone_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)

@@ -5,11 +5,15 @@ class MilestoneCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     phase_name: str | None = None
     status: str = "Not Started"
+    start_date: date | None = None
+    end_date: date | None = None
     due_date: date | None = None
 
 class MilestoneUpdate(BaseModel):
     name: str | None = None
     status: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
     due_date: date | None = None
 
 class MilestoneOut(MilestoneCreate):
