@@ -3431,6 +3431,70 @@ def options(db: Session = Depends(get_db)):
             "customer_success_managers": CUSTOMER_SUCCESS_MANAGERS,
             "next_action_owners": NEXT_ACTION_OWNERS}
 
+def require_mcp_service_token(request: Request):
+    expected = (os.getenv("BULLFROG_MCP_SERVICE_TOKEN") or "").strip()
+    authorization = request.headers.get("authorization", "")
+    supplied = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    if not expected or not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="A valid service Bearer token is required")
+
+
+@app.get("/api/mcp/customers/{customer_id}/projects")
+def mcp_customer_projects(
+    customer_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    require_mcp_service_token(request)
+    clean_id = customer_id.strip()
+    if not clean_id.isdigit():
+        raise HTTPException(400, "Customer ID must contain numbers only")
+
+    projects = list(
+        db.scalars(
+            project_query()
+            .where(Project.customer_id == clean_id)
+            .order_by(Project.updated_at.desc())
+        ).unique().all()
+    )
+
+    def date_value(value):
+        return value.isoformat() if value else None
+
+    return {
+        "customer_id": clean_id,
+        "project_count": len(projects),
+        "projects": [
+            {
+                "project_id": project.id,
+                "revio_project_id": project.revio_project_id,
+                "project_name": project.project_name,
+                "project_type": project.project_type,
+                "stage": project.stage,
+                "risk": project.risk,
+                "priority": project.priority,
+                "engineer": project.engineer,
+                "customer_success_manager": project.technical_manager,
+                "sales_owner": project.sales_owner,
+                "start_date": date_value(project.start_date),
+                "target_go_live": date_value(project.target_date),
+                "updated_at": date_value(project.updated_at),
+                "milestones": [
+                    {
+                        "name": item.name,
+                        "phase": item.phase_name,
+                        "status": item.status,
+                        "due_date": date_value(item.due_date),
+                        "completed_date": date_value(item.completed_date),
+                    }
+                    for item in project.milestones
+                ],
+            }
+            for project in projects
+        ],
+    }
+
+
 @app.get("/api/projects", response_model=list[ProjectOut])
 def list_projects(
     search: str | None = None, stage: str | None = None, risk: str | None = None,
