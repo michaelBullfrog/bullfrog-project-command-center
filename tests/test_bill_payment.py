@@ -31,13 +31,16 @@ class BillPaymentStatusTests(unittest.IsolatedAsyncioTestCase):
                 }]
             },
         ]
-        with patch.object(main, "revio_billing_get", AsyncMock(side_effect=responses)):
+        with patch.object(main, "revio_billing_get", AsyncMock(side_effect=responses)) as billing_get:
             result = await main.revio_billing_bill_payment_status("1996", selected_bill)
 
         self.assertTrue(result["paid"])
         self.assertEqual(result["amount_applied"], Decimal("1089.50"))
         self.assertEqual(result["remaining"], Decimal("0"))
         self.assertEqual(result["payments"][0]["payment_id"], "21165")
+        payment_search = billing_get.await_args_list[0].args[1]
+        self.assertEqual(payment_search["search.customer_id"], "1996")
+        self.assertNotIn("search.bill_id", payment_search)
 
     async def test_partial_payment_keeps_bill_waiting(self):
         selected_bill = {
