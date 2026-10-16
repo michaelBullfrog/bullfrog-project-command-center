@@ -2222,11 +2222,13 @@ async def revio_billing_bill_payment_status(
     except (KeyError, InvalidOperation) as exc:
         raise RuntimeError(f"Rev.io Bill {bill_number} did not include a valid amount due") from exc
 
+    # Rev.io does not reliably return payments when the payment search is
+    # filtered by bill ID. Search the customer's recent payments, then use the
+    # authoritative BillAppliedTo endpoint to match each one to this bill.
     payments_payload = await revio_billing_get(
         "/v1/Payments",
         {
             "search.customer_id": customer_id,
-            "search.bill_id": bill_id,
             "search.page_size": 100,
             "search.sort": "-received_date",
         },
