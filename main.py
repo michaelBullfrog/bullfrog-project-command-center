@@ -1819,12 +1819,12 @@ async def revio_billing_find_customer(customer_name: str) -> dict:
     balance_value = revio_value(finance, "balance")
     if customer_id in (None, ""):
         raise RuntimeError("Rev.io Billing returned the customer without an ID")
-    if balance_value in (None, ""):
-        raise RuntimeError("Rev.io Billing returned the customer without an account balance")
-    try:
-        balance = Decimal(str(balance_value))
-    except InvalidOperation as exc:
-        raise RuntimeError("Rev.io Billing returned an invalid account balance") from exc
+    balance = None
+    if balance_value not in (None, ""):
+        try:
+            balance = Decimal(str(balance_value))
+        except InvalidOperation as exc:
+            raise RuntimeError("Rev.io Billing returned an invalid account balance") from exc
     return {"customer_id": str(customer_id), "customer_name": revio_billing_customer_name(customer), "balance": balance}
 
 async def revio_billing_signed_quotes(customer_id: str) -> list[dict]:
@@ -2070,11 +2070,20 @@ async def revio_billing_selected_source(customer_id: str, selected_id: str | Non
             if str(revio_value(item, "customer_id", "customerId") or customer_id) == str(customer_id)
         ]
         bill_number = revio_value(bill, "bill_number", "billNumber", "invoice_number", "invoiceNumber") or source_value
+        amount_due = revio_value(bill, "amount_due", "amountDue")
+        if amount_due in (None, ""):
+            raise RuntimeError(f"Rev.io Bill {bill_number} did not include an amount due")
+        try:
+            bill_amount_due = Decimal(str(amount_due))
+        except InvalidOperation as exc:
+            raise RuntimeError(f"Rev.io Bill {bill_number} returned an invalid amount due") from exc
         return {
             "source_id": f"bill:{source_value}",
             "source_type": "Bill",
             "source_number": str(bill_number),
             "quote_id": source_value,
+            "bill_id": source_value,
+            "bill_amount_due": bill_amount_due,
             "description": f"Rev.io Bill #{bill_number}",
             "status": "Billed",
             "signed_at": revio_value(bill, "cycle_date", "cycleDate", "created_date", "createdDate", "due_date", "dueDate"),
@@ -2136,6 +2145,128 @@ async def revio_billing_selected_source(customer_id: str, selected_id: str | Non
         }
 
     raise RuntimeError("The selected Rev.io billing source is not supported")
+
+
+def revio_billing_flag(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().casefold() in ("1", "true", "yes", "y")
+
+
+def revio_billing_application_rows(payload) -> list[dict]:
+    """Extract BillAppliedTo rows despite legacy response-wrapper variations."""
+    rows: list[dict] = []
+
+    def visit(value):
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+
+        bill_id = revio_value(
+            value, "bill_id", "billId", "statement_id", "statementId"
+        )
+        amount = revio_value(
+            value, "amount_applied", "amountApplied", "applied_amount",
+            "appliedAmount", "amount",
+        )
+        if bill_id in (None, "") and amount not in (None, ""):
+            bill_id = revio_value(value, "id")
+        if bill_id not in (None, "") and amount not in (None, ""):
+            rows.append({"bill_id": str(bill_id), "amount": amount})
+            return
+
+        # A few older Rev.io tenants return a bill-to-amount object instead of
+        # named fields, for example {"79311": 1089.50}.
+        for key, item in value.items():
+            if str(key).isdigit() and isinstance(item, (int, float, Decimal, str)):
+                try:
+                    Decimal(str(item))
+                except InvalidOperation:
+                    pass
+                else:
+                    rows.append({"bill_id": str(key), "amount": item})
+                    continue
+            visit(item)
+
+    visit(payload)
+    return rows
+
+
+async def revio_billing_bill_payment_status(
+    customer_id: str, selected_source: dict
+) -> dict:
+    """Confirm payments applied to the selected bill, not the account balance."""
+    if selected_source.get("source_type") != "Bill":
+        raise RuntimeError(
+            "Hardware Payment Check requires a specific Rev.io Bill. "
+            "Edit the project and select the bill associated with the signed quote."
+        )
+
+    bill_id = str(selected_source.get("bill_id") or selected_source.get("quote_id") or "")
+    bill_number = str(selected_source.get("source_number") or bill_id)
+    if not bill_id.isdigit():
+        raise RuntimeError("The selected Rev.io Bill ID is invalid")
+    try:
+        bill_amount = Decimal(str(selected_source["bill_amount_due"]))
+    except (KeyError, InvalidOperation) as exc:
+        raise RuntimeError(f"Rev.io Bill {bill_number} did not include a valid amount due") from exc
+
+    payments_payload = await revio_billing_get(
+        "/v1/Payments",
+        {
+            "search.customer_id": customer_id,
+            "search.bill_id": bill_id,
+            "search.page_size": 100,
+            "search.sort": "-received_date",
+        },
+    )
+    payment_details = []
+    amount_applied = Decimal("0")
+    for payment in revio_records(payments_payload):
+        payment_id = revio_value(payment, "payment_id", "paymentId", "id")
+        if payment_id in (None, ""):
+            continue
+        if revio_billing_flag(revio_value(payment, "refund_flag", "refundFlag", "refunded")):
+            continue
+        if revio_billing_flag(revio_value(payment, "bounced", "is_bounced", "isBounced")):
+            continue
+
+        applied_payload = await revio_billing_get(
+            f"/v1/Payments/{quote(str(payment_id), safe='')}/billappliedto"
+        )
+        applied_for_payment = Decimal("0")
+        for application in revio_billing_application_rows(applied_payload):
+            if application["bill_id"] != bill_id:
+                continue
+            try:
+                applied_for_payment += Decimal(str(application["amount"]))
+            except InvalidOperation as exc:
+                raise RuntimeError(
+                    f"Rev.io payment {payment_id} returned an invalid applied amount"
+                ) from exc
+        if applied_for_payment == 0:
+            continue
+        amount_applied += applied_for_payment
+        payment_details.append({
+            "payment_id": str(payment_id),
+            "amount_applied": applied_for_payment,
+            "received_date": revio_value(payment, "received_date", "receivedDate", "created_date", "createdDate"),
+            "reference_number": revio_value(payment, "reference_number", "referenceNumber"),
+        })
+
+    remaining = max(Decimal("0"), bill_amount - amount_applied)
+    return {
+        "bill_id": bill_id,
+        "bill_number": bill_number,
+        "bill_amount": bill_amount,
+        "amount_applied": amount_applied,
+        "remaining": remaining,
+        "paid": bool(payment_details) and remaining == Decimal("0"),
+        "payments": payment_details,
+    }
 
 def record_automation_activity(db: Session, project_id: int, action: str, description: str, old_value=None, new_value=None):
     db.add(ProjectActivity(
@@ -2646,7 +2777,9 @@ async def project_notification_maintenance():
             logger.exception("Daily project notification check failed")
 
 
-async def graph_send_hardware_order_email(project: dict, billing_customer: dict, signed_quote: dict):
+async def graph_send_hardware_order_email(
+    project: dict, billing_customer: dict, signed_quote: dict, payment_status: dict
+):
     if not graph_configured():
         raise RuntimeError("Microsoft Graph is not configured")
     sender = quote(os.environ["MS_INTAKE_MAILBOX"], safe="")
@@ -2660,6 +2793,10 @@ async def graph_send_hardware_order_email(project: dict, billing_customer: dict,
     source_type = html.escape(signed_quote.get("source_type") or "Quote")
     source_number = html.escape(str(signed_quote.get("source_number") or signed_quote.get("quote_id") or ""))
     source_description = html.escape(signed_quote["description"])
+    payment_numbers = ", ".join(
+        f"#{payment['payment_id']}"
+        for payment in payment_status.get("payments", [])
+    ) or "Not returned"
     product_rows = "".join(
         "<tr><td>" + html.escape(str(product.get("quantity") or "")) + "</td><td>"
         + html.escape(product.get("description") or "") + "</td><td>"
@@ -2670,14 +2807,17 @@ async def graph_send_hardware_order_email(project: dict, billing_customer: dict,
         product_rows = '<tr><td colspan="3">No product or charge lines were returned for this selection.</td></tr>'
     project_link = f'<p><a href="{html.escape(app_url)}">Open Bullfrog Projects</a></p>' if app_url else ""
     body = f"""
-        <p>The approved billing selection for <strong>{customer}</strong> has cleared the Rev.io Billing balance check.</p>
+        <p>The selected bill for <strong>{customer}</strong> has been fully paid in Rev.io Billing.</p>
         <table>
           <tr><td><strong>Rev.io Billing Customer ID</strong></td><td>{billing_id}</td></tr>
           <tr><td><strong>Project</strong></td><td>{project_name}</td></tr>
           <tr><td><strong>Project Type</strong></td><td>{project_type}</td></tr>
           <tr><td><strong>Sales Owner</strong></td><td>{sales_owner}</td></tr>
           <tr><td><strong>Rev.io Source</strong></td><td>{source_type} #{source_number}</td></tr>
-          <tr><td><strong>Verified Balance</strong></td><td>$0.00</td></tr>
+          <tr><td><strong>Bill Amount</strong></td><td>${payment_status['bill_amount']:,.2f}</td></tr>
+          <tr><td><strong>Payments Applied</strong></td><td>${payment_status['amount_applied']:,.2f}</td></tr>
+          <tr><td><strong>Payment Record(s)</strong></td><td>{html.escape(payment_numbers)}</td></tr>
+          <tr><td><strong>Verified Bill Balance</strong></td><td>$0.00</td></tr>
         </table>
         <h3>{source_type} Description</h3>
         <p style="white-space: pre-wrap;">{source_description}</p>
@@ -2717,21 +2857,26 @@ async def process_hardware_order_workflow(project_id: int):
         previous_balance = workflow.last_balance
         billing_customer = await revio_billing_find_customer(project.customer)
         signed_quote = await revio_billing_selected_source(billing_customer["customer_id"], project.quote_id)
-        balance = billing_customer["balance"]
+        payment_status = await revio_billing_bill_payment_status(
+            billing_customer["customer_id"], signed_quote
+        )
+        balance = payment_status["remaining"]
         workflow.revio_customer_id = billing_customer["customer_id"]
         workflow.revio_customer_name = billing_customer["customer_name"]
         workflow.last_balance = str(balance)
         workflow.last_checked_at = datetime.utcnow()
         workflow.last_error = None
 
-        if balance != Decimal("0"):
+        if not payment_status["paid"]:
             workflow.status = "Waiting for zero balance"
             if previous_status != workflow.status or previous_balance != workflow.last_balance:
                 record_automation_activity(
                     db, project.id, "hardware_order_waiting",
                     f"Rev.io Billing verified {billing_customer['customer_name']}; "
-                    f"hardware order is waiting for the account balance to reach $0.00 "
-                    f"(current balance: $" f"{balance:,.2f})",
+                    f"hardware order is waiting for Bill #{payment_status['bill_number']} "
+                    f"to be fully paid (bill amount: ${payment_status['bill_amount']:,.2f}; "
+                    f"payments applied: ${payment_status['amount_applied']:,.2f}; "
+                    f"remaining: ${balance:,.2f})",
                     old_value=previous_balance, new_value=workflow.last_balance,
                 )
             db.commit()
@@ -2744,13 +2889,15 @@ async def process_hardware_order_workflow(project_id: int):
         workflow.status = "Sending"
         db.commit()
         try:
-            await graph_send_hardware_order_email(project_snapshot, billing_customer, signed_quote)
+            await graph_send_hardware_order_email(
+                project_snapshot, billing_customer, signed_quote, payment_status
+            )
         except httpx.TimeoutException:
             workflow.status = "Needs Review"
             workflow.last_error = "The email request timed out. Delivery is uncertain, so automatic retries are paused."
             record_automation_activity(
                 db, project.id, "hardware_order_review",
-                "Rev.io Billing balance is $0.00, but the Sales email timed out. "
+                f"Rev.io Bill #{payment_status['bill_number']} is fully paid, but the Sales email timed out. "
                 "Automatic retry is paused to prevent a duplicate email.",
             )
             db.commit()
@@ -2761,8 +2908,8 @@ async def process_hardware_order_workflow(project_id: int):
         workflow.email_sent_at = datetime.utcnow()
         record_automation_activity(
             db, project.id, "hardware_order_sent",
-            f"Rev.io Billing verified {signed_quote.get('source_type', 'Quote')} "
-            f"{signed_quote.get('source_number') or signed_quote.get('quote_id')} and a $0.00 balance, then notified "
+            f"Rev.io Billing verified Bill #{payment_status['bill_number']} was fully paid "
+            f"(${payment_status['amount_applied']:,.2f} applied; $0.00 remaining), then notified "
             f"{os.getenv('HARDWARE_ORDER_EMAIL', 'sales@bullfrog.net')} to order hardware",
             old_value=previous_status, new_value="Sent",
         )
@@ -3819,7 +3966,7 @@ async def update_milestone(
         if workflow.status != "Sent":
             record_automation_activity(
                 db, item.project_id, "hardware_order_queued",
-                "Hardware Payment Check is complete; queued the Rev.io Billing balance check",
+                "Hardware Payment Check is complete; queued the selected Rev.io Bill payment check",
             )
 
     # Go Live's CSM license-count ticket is an explicitly enabled workflow even
