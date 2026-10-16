@@ -77,7 +77,7 @@ New project templates separate **Signed Proposal** from **Hardware Payment Check
 
 1. searches Rev.io Billing for an exact normalized customer-name match;
 2. reads the selected Rev.io Bill and its payment applications;
-3. waits and rechecks hourly until payments applied to that exact Bill cover its full amount; and
+3. waits for Rev.io payment webhooks and runs a daily 7:00 a.m. Eastern reconciliation until payments applied to that exact Bill cover its full amount; and
 4. sends one hardware-order email to `sales@bullfrog.net` after the selected Bill is fully paid.
 
 The workflow is persisted in PostgreSQL and will not send a second email if the milestone is toggled or the app restarts. Its checks and outcomes are written to Project Activity History.
@@ -90,11 +90,12 @@ The app also supports `REVIO_BILLING_USERNAME`, `REVIO_BILLING_CLIENT_CODE`, and
 
 - Optional `REVIO_BILLING_BASE_URL` (defaults to `https://restapi.rev.io`)
 - Optional `HARDWARE_ORDER_EMAIL` (defaults to `sales@bullfrog.net`)
-- Optional `HARDWARE_ORDER_CHECK_SECONDS` (defaults to 3600; minimum 300)
+- Optional `HARDWARE_ORDER_RECONCILIATION_HOUR` (defaults to `7`)
+- Optional `HARDWARE_ORDER_RECONCILIATION_TIMEZONE` (defaults to `America/New_York`)
 
 ## Rev.io Billing webhooks and Automation Center
 
-The **Automations** screen shows Hardware Payment workflows, remaining selected-Bill balances, last and next checks, email delivery time, errors, and the latest Rev.io Billing webhook events. A manager can run a payment check immediately or retry a failed webhook event. The hourly background check remains enabled as a fallback.
+The **Automations** screen shows Hardware Payment workflows, remaining selected-Bill balances, last and next checks, email delivery time, errors, and the latest Rev.io Billing webhook events. A manager can run a payment check immediately or retry a failed webhook event. A daily 7:00 a.m. Eastern reconciliation remains enabled as a fallback.
 
 To enable immediate payment-event processing:
 
