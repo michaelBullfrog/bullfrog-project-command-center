@@ -2831,6 +2831,31 @@ async def project_notification_maintenance():
             logger.exception("Daily project notification check failed")
 
 
+def next_hardware_reconciliation_at(now: datetime | None = None) -> datetime:
+    """Return the next daily hardware-payment reconciliation as naive UTC."""
+    timezone_name = os.getenv(
+        "HARDWARE_ORDER_RECONCILIATION_TIMEZONE", "America/New_York"
+    ).strip() or "America/New_York"
+    try:
+        local_zone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        logger.error(
+            "Unknown hardware reconciliation timezone %s; using UTC", timezone_name
+        )
+        local_zone = timezone.utc
+    run_hour = min(
+        23, max(0, int(os.getenv("HARDWARE_ORDER_RECONCILIATION_HOUR", "7")))
+    )
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    local_now = current.astimezone(local_zone)
+    next_run = local_now.replace(hour=run_hour, minute=0, second=0, microsecond=0)
+    if next_run <= local_now:
+        next_run += timedelta(days=1)
+    return next_run.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 async def graph_send_hardware_order_email(
     project: dict, billing_customer: dict, signed_quote: dict, payment_status: dict
 ):
@@ -3128,9 +3153,12 @@ async def process_revio_webhook_event(event_id: int):
             db.close()
 
 async def hardware_order_maintenance():
-    interval = max(300, int(os.getenv("HARDWARE_ORDER_CHECK_SECONDS", "3600")))
     while True:
-        await asyncio.sleep(interval)
+        next_run = next_hardware_reconciliation_at()
+        delay = (
+            next_run.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)
+        ).total_seconds()
+        await asyncio.sleep(max(1, delay))
         db = SessionLocal()
         try:
             project_ids = list(db.scalars(
@@ -3400,7 +3428,7 @@ async def receive_revio_billing_webhook(
 
 @app.get("/api/automations")
 def get_automation_center(db: Session = Depends(get_db)):
-    interval = max(300, int(os.getenv("HARDWARE_ORDER_CHECK_SECONDS", "3600")))
+    next_reconciliation = next_hardware_reconciliation_at()
     workflow_rows = list(db.execute(
         select(HardwareOrderWorkflow, Project)
         .join(Project, Project.id == HardwareOrderWorkflow.project_id)
@@ -3410,8 +3438,7 @@ def get_automation_center(db: Session = Depends(get_db)):
     for workflow, project in workflow_rows:
         next_check = None
         if workflow.email_sent_at is None and workflow.status in ("Pending", "Waiting for zero balance", "Retry"):
-            anchor = workflow.last_checked_at or workflow.created_at
-            next_check = anchor + timedelta(seconds=interval)
+            next_check = next_reconciliation
         workflows.append({
             "id": workflow.id,
             "project_id": project.id,
@@ -3455,7 +3482,13 @@ def get_automation_center(db: Session = Depends(get_db)):
         "webhook": {
             "configured": bool((os.getenv("REVIO_WEBHOOK_TOKEN") or "").strip()),
             "events": sorted(REVIO_PAYMENT_WEBHOOK_EVENTS),
-            "fallback_interval_seconds": interval,
+            "fallback_schedule": {
+                "hour": min(23, max(0, int(os.getenv("HARDWARE_ORDER_RECONCILIATION_HOUR", "7")))),
+                "timezone": os.getenv(
+                    "HARDWARE_ORDER_RECONCILIATION_TIMEZONE", "America/New_York"
+                ).strip() or "America/New_York",
+                "next_run_at": next_reconciliation,
+            },
         },
         "workflows": workflows,
         "events": events,
