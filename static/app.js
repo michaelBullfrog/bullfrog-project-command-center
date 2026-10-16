@@ -1,6 +1,7 @@
-const state={projects:[],intake:[],templates:[],intakeError:null,options:{},revioProjectOptions:{statuses:[],priorities:[],member_roles:[]},revioProjectOptionsError:null,view:"dashboard",detailId:null};
+const state={projects:[],intake:[],templates:[],automations:null,automationError:null,intakeError:null,options:{},revioProjectOptions:{statuses:[],priorities:[],member_roles:[]},revioProjectOptionsError:null,view:"dashboard",detailId:null};
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const fmtDate=v=>v?new Date(v+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"Not set";
+const fmtTimestamp=v=>v?new Date(v+(String(v).endsWith("Z")?"":"Z")).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}):"Not yet";
 const milestoneDateRange=m=>{
  const start=m.start_date,end=m.end_date||m.due_date;
  if(!start&&!end)return "Schedule not set";
@@ -32,14 +33,16 @@ function isOverdue(p){return p.next_action_due&&daysUntil(p.next_action_due)<0&&
 function needsAttention(p){return p.stage!=="Complete"&&(p.risk!=="Green"||isOverdue(p))}
 function row(p,compact=false){return '<tr data-id="'+p.id+'"><td><div class="item-title">'+safe(p.customer)+'</div><div class="item-sub">'+safe(p.project_name)+'</div></td>'+(compact?'<td>'+safe(p.project_type)+'</td>':'')+'<td>'+safe(p.engineer||"Unassigned")+'</td><td><span class="badge stage">'+safe(p.stage)+'</span></td><td>'+badge(p.risk)+'</td><td>'+fmtDate(p.target_date)+'</td><td><div>'+safe(p.next_action||"No next action")+'</div><div class="item-sub">'+safe(p.next_action_owner||"Unassigned")+'</div></td></tr>'}
 async function load(){
- const [options,projects,templates,revioOptions]=await Promise.all([
+ const [options,projects,templates,revioOptions,automations]=await Promise.all([
   api("/api/options"),
   api("/api/projects"),
   api("/api/project-templates"),
-  api("/api/revio/projects/options").catch(e=>({error:e.message,statuses:[],priorities:[],member_roles:[]}))
+  api("/api/revio/projects/options").catch(e=>({error:e.message,statuses:[],priorities:[],member_roles:[]})),
+  api("/api/automations").catch(e=>({error:e.message}))
  ]);
  state.options=options;state.projects=projects;state.templates=templates;
  if(revioOptions.error){state.revioProjectOptionsError=revioOptions.error}else{state.revioProjectOptions=revioOptions}
+ if(automations.error){state.automationError=automations.error}else{state.automations=automations;state.automationError=null}
  fillOptions();renderAll()
 }
 function fillOptions(){
@@ -69,7 +72,7 @@ function fillOptions(){
   $("#revio-project-status").className="lookup-status span-2 error";
  }
 }
-function renderAll(){renderDashboard();renderProjects();renderTeam();renderTemplates();bindRows()}
+function renderAll(){renderDashboard();renderProjects();renderTeam();renderTemplates();renderAutomations();bindRows()}
 function renderDashboard(){
  const list=active(), reds=list.filter(p=>p.risk==="Red").length, yellows=list.filter(p=>p.risk==="Yellow").length;
  const overdue=list.filter(isOverdue).length;
@@ -117,6 +120,26 @@ function renderTemplates(){
  $$("[data-edit-template]").forEach(x=>x.onclick=()=>openTemplateForm(state.templates.find(t=>t.id===Number(x.dataset.editTemplate))));
  $$("[data-delete-template]").forEach(x=>x.onclick=async()=>{const item=state.templates.find(t=>t.id===Number(x.dataset.deleteTemplate));if(!item||!confirm("Delete the custom project type "+item.name+"?"))return;try{await api("/api/project-templates/"+item.id,{method:"DELETE"});await refreshTemplates();toast("Project type deleted")}catch(e){toast(e.message)}});
 }
+function automationStatus(value){return '<span class="automation-status status-'+safe(String(value||"").toLowerCase().replace(/[^a-z0-9]+/g,"-"))+'">'+safe(value||"Unknown")+'</span>'}
+function renderAutomations(){
+ const data=state.automations,metrics=$("#automation-metrics"),workflows=$("#automation-workflows"),events=$("#automation-events-table");
+ if(!metrics||!workflows||!events)return;
+ const navCount=$("#automation-nav-count");
+ if(state.automationError){metrics.innerHTML='<div class="automation-error-card">Automation Center could not load: '+safe(state.automationError)+'</div>';workflows.innerHTML='<tr><td colspan="7" class="empty">Unable to load workflows.</td></tr>';events.innerHTML='<tr><td colspan="6" class="empty">Unable to load webhook events.</td></tr>';navCount.classList.add("hidden");return}
+ if(!data)return;
+ const summary=data.summary||{};
+ metrics.innerHTML=[["Active",summary.active||0,"↻"],["Waiting for Payment",summary.waiting||0,"$"],["Emails Sent",summary.sent||0,"✓"],["Needs Attention",summary.attention||0,"!"]].map(x=>'<div class="metric"><div class="metric-top"><span>'+x[0]+'</span><span class="metric-icon">'+x[2]+'</span></div><strong>'+x[1]+'</strong></div>').join("");
+ navCount.textContent=summary.attention||0;navCount.classList.toggle("hidden",!(summary.attention||0));
+ const webhookStatus=$("#webhook-status");webhookStatus.className="automation-status "+(data.webhook.configured?"status-completed":"status-needs-review");webhookStatus.textContent=data.webhook.configured?"Configured":"Setup Required";
+ $("#webhook-description").textContent=data.webhook.configured?"Payment events can wake the app and run the matching selected-bill check immediately. The hourly check remains enabled as a fallback.":"Add REVIO_WEBHOOK_TOKEN in Render before registering the Rev.io Billing receiver.";
+ $("#webhook-events").innerHTML=(data.webhook.events||[]).map(event=>'<span>'+safe(event.replaceAll("_"," "))+'</span>').join("");
+ workflows.innerHTML=(data.workflows||[]).length?(data.workflows||[]).map(item=>'<tr><td><div class="item-title">'+safe(item.customer)+'</div><div class="item-sub">'+safe(item.project_name)+'</div></td><td>'+safe(String(item.billing_source||"Not selected").replace(/^bill:/,"#"))+'</td><td>'+automationStatus(item.status)+(item.last_error?'<div class="automation-error">'+safe(item.last_error)+'</div>':'')+'</td><td>'+(item.remaining_balance!=null?'$'+Number(item.remaining_balance).toFixed(2):'Not checked')+'</td><td>'+fmtTimestamp(item.last_checked_at)+'</td><td>'+fmtTimestamp(item.next_check_at)+'</td><td>'+(!item.email_sent_at?'<button class="secondary compact" data-run-hardware="'+item.project_id+'">Run Now</button>':'<span class="automation-complete">Email sent '+fmtTimestamp(item.email_sent_at)+'</span>')+'</td></tr>').join(""):'<tr><td colspan="7" class="empty">No Hardware Payment workflows have been started.</td></tr>';
+ const eventList=data.events||[];$("#automation-event-count").textContent=eventList.length+" events";
+ events.innerHTML=eventList.length?eventList.map(item=>'<tr><td>'+fmtTimestamp(item.received_at)+'</td><td><strong>'+safe(String(item.event_type||"").replaceAll("_"," "))+'</strong><div class="item-sub">'+safe(item.source)+'</div></td><td>'+safe(item.object_id?"#"+item.object_id:"Not supplied")+'</td><td>'+automationStatus(item.status)+'</td><td><div class="automation-detail">'+safe(item.last_error||item.detail||"No details")+'</div></td><td>'+(item.status==="Failed"?'<button class="secondary compact" data-retry-event="'+item.id+'">Retry</button>':'—')+'</td></tr>').join(""):'<tr><td colspan="6" class="empty">No Rev.io webhook events received yet.</td></tr>';
+ $$('[data-run-hardware]').forEach(button=>button.onclick=async()=>{button.disabled=true;button.textContent="Running…";try{await api('/api/automations/hardware/'+button.dataset.runHardware+'/run',{method:'POST'});toast('Hardware Payment Check queued');setTimeout(loadAutomations,900)}catch(e){toast(e.message);button.disabled=false;button.textContent='Run Now'}});
+ $$('[data-retry-event]').forEach(button=>button.onclick=async()=>{button.disabled=true;button.textContent="Retrying…";try{await api('/api/automations/events/'+button.dataset.retryEvent+'/retry',{method:'POST'});toast('Webhook event queued for retry');setTimeout(loadAutomations,900)}catch(e){toast(e.message);button.disabled=false;button.textContent='Retry'}})
+}
+async function loadAutomations(){try{state.automations=await api("/api/automations");state.automationError=null}catch(e){state.automations=null;state.automationError=e.message}renderAutomations()}
 function formatTemplateWork(items,type){
  return (items||[]).filter(item=>item.item_type===type).map(item=>[item.name,item.owner_role||"engineer",item.estimated_hours??"",item.description||""].join(" | ").replace(/(\s*\|\s*)+$/,"")).join("\n")
 }
@@ -140,7 +163,7 @@ async function refreshTemplates(){
 }
 function bindRows(){$$("[data-id]").forEach(el=>el.onclick=()=>openDetail(Number(el.dataset.id)))}
 async function loadIntake(){try{state.intake=await api("/api/intake");state.intakeError=null}catch(e){console.error("Project intake:",e);state.intake=[];state.intakeError=e.message}renderIntake()}
-function setView(name){state.view=name;$$(".view").forEach(v=>v.classList.add("hidden"));const target=$("#"+name+"-view");if(!target){toast("This view is not available. Please refresh the page.");return}target.classList.remove("hidden");Array.from(document.querySelectorAll(".nav-link")).forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",intake:"Project Intake",team:"Team View",templates:"Project Types"}[name];if(name==="intake")loadIntake()}
+function setView(name){state.view=name;$$(".view").forEach(v=>v.classList.add("hidden"));const target=$("#"+name+"-view");if(!target){toast("This view is not available. Please refresh the page.");return}target.classList.remove("hidden");Array.from(document.querySelectorAll(".nav-link")).forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",intake:"Project Intake",team:"Team View",templates:"Project Types",automations:"Automation Center"}[name];if(name==="intake")loadIntake();if(name==="automations")loadAutomations()}
 function resetQuoteOptions(selectedId=""){
  const select=$("#quote-id-select"),statusEl=$("#quote-lookup-status");select.replaceChildren(new Option(selectedId?"Previously selected Rev.io source "+selectedId:"Search the customer to load quotes, bills, and charges",selectedId||""));select.disabled=true;statusEl.textContent="";statusEl.className="lookup-status";
 }
@@ -313,6 +336,8 @@ if(templateForm)templateForm.onsubmit=async e=>{e.preventDefault();const phases=
 const newTemplateButton=$("#new-template"),addTemplatePhaseButton=$("#add-template-phase");
 if(newTemplateButton)newTemplateButton.onclick=()=>openTemplateForm();
 if(addTemplatePhaseButton)addTemplatePhaseButton.onclick=()=>addTemplatePhase();
+const refreshAutomationsButton=$("#refresh-automations");
+if(refreshAutomationsButton)refreshAutomationsButton.onclick=async()=>{const original=refreshAutomationsButton.textContent;refreshAutomationsButton.disabled=true;refreshAutomationsButton.textContent="Refreshing…";await loadAutomations();refreshAutomationsButton.disabled=false;refreshAutomationsButton.textContent=original};
 $$(".nav-link").forEach(n=>n.onclick=()=>setView(n.dataset.view));$$("[data-go]").forEach(n=>n.onclick=()=>setView(n.dataset.go));
 $("#lookup-customer").onclick=async()=>{const form=$("#project-form"),customerId=form.elements.customer_id.value.trim(),button=$("#lookup-customer"),statusEl=$("#customer-lookup-status");if(!/^\d+$/.test(customerId)){statusEl.textContent="Enter a numeric Customer ID first.";statusEl.className="lookup-status error";return}button.disabled=true;button.textContent="Searching…";statusEl.textContent="";resetQuoteOptions();try{const result=await api("/api/revio/customers/"+encodeURIComponent(customerId));form.elements.customer.value=result.customer_name;statusEl.textContent="✓ Customer found: "+result.customer_name;statusEl.className="lookup-status success";button.textContent="Loading quotes…";await loadSignedQuotes(result.customer_name);form.elements.quote_id.focus()}catch(e){statusEl.textContent=e.message;statusEl.className="lookup-status error"}finally{button.disabled=false;button.textContent="Search Rev PSA"}};
 $("#sync-intake").onclick=async()=>{const button=$("#sync-intake");button.disabled=true;button.textContent="Syncing…";try{const result=await api("/api/graph/sync",{method:"POST"});await loadIntake();toast(result.imported?result.imported+" email(s) added to Project Intake":"Inbox is already up to date")}catch(e){toast("Inbox sync failed: "+e.message)}finally{button.disabled=false;button.textContent="↻ Sync Inbox"}};
