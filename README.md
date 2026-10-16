@@ -76,9 +76,9 @@ Note attachments support PNG, JPG, PDF, Word, Excel, and TXT files. Each file is
 New project templates separate **Signed Proposal** from **Hardware Payment Check**. Signed Proposal creates the internal-handoff PSA ticket. When Hardware Payment Check is marked complete, the app:
 
 1. searches Rev.io Billing for an exact normalized customer-name match;
-2. reads the customer's account-wide `finance.balance` (including unbilled transactions);
-3. waits and rechecks hourly while the balance is not zero; and
-4. sends one hardware-order email to `sales@bullfrog.net` after a confirmed $0.00 balance.
+2. reads the selected Rev.io Bill and its payment applications;
+3. waits and rechecks hourly until payments applied to that exact Bill cover its full amount; and
+4. sends one hardware-order email to `sales@bullfrog.net` after the selected Bill is fully paid.
 
 The workflow is persisted in PostgreSQL and will not send a second email if the milestone is toggled or the app restarts. Its checks and outcomes are written to Project Activity History.
 
@@ -91,6 +91,20 @@ The app also supports `REVIO_BILLING_USERNAME`, `REVIO_BILLING_CLIENT_CODE`, and
 - Optional `REVIO_BILLING_BASE_URL` (defaults to `https://restapi.rev.io`)
 - Optional `HARDWARE_ORDER_EMAIL` (defaults to `sales@bullfrog.net`)
 - Optional `HARDWARE_ORDER_CHECK_SECONDS` (defaults to 3600; minimum 300)
+
+## Rev.io Billing webhooks and Automation Center
+
+The **Automations** screen shows Hardware Payment workflows, remaining selected-Bill balances, last and next checks, email delivery time, errors, and the latest Rev.io Billing webhook events. A manager can run a payment check immediately or retry a failed webhook event. The hourly background check remains enabled as a fallback.
+
+To enable immediate payment-event processing:
+
+1. Add a long random `REVIO_WEBHOOK_TOKEN` secret to the Render web service and redeploy.
+2. In Rev.io Billing, register this receiver URL, replacing `<token>` with the exact secret:
+   `https://bullfrog-project-command-center.onrender.com/api/webhooks/revio-billing/<token>`
+3. Enable `PAYMENT_CREATED`, `PAYMENT_REAPPLIED`, `PAYMENT_REVERSED`, `PAYMENT_VOID`, and `PAYMENT_BOUNCED`.
+4. Require receiver confirmation. The endpoint echoes Rev.io's `X-Hook-Secret` header and activates the receiver.
+
+Webhook events are saved before processing and deduplicated by Rev.io event ID. Positive payment events immediately recheck projects linked to the affected Bill. A reversal, void, or bounced payment after the hardware-order email was sent changes the workflow to **Needs Review** but never sends a duplicate order email.
 
 These settings are separate from the Rev.io PSA API. Store the authorization value only as a secret environment variable; never commit it to GitHub.
 

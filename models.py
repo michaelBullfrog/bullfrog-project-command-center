@@ -180,6 +180,29 @@ class HardwareOrderWorkflow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
+
+class AutomationEvent(Base):
+    __tablename__ = "automation_events"
+    __table_args__ = (UniqueConstraint("event_key", name="uq_automation_event_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_key: Mapped[str] = mapped_column(String(255), index=True)
+    source: Mapped[str] = mapped_column(String(80), default="Rev.io Billing", index=True)
+    event_type: Mapped[str] = mapped_column(String(100), index=True)
+    object_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    customer_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(40), default="Received", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
 class PsaTicketWorkflow(Base):
     __tablename__ = "psa_ticket_workflows"
     __table_args__ = (UniqueConstraint("project_id", "workflow_key", name="uq_psa_ticket_workflow_step"),)

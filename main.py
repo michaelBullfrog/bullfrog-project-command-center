@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import html
 import json
 import httpx
@@ -17,11 +18,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
-from sqlalchemy import inspect, or_, select, text
+from sqlalchemy import inspect, or_, select, text, update
 from sqlalchemy.orm import Session, selectinload
 
 from database import Base, SessionLocal, engine, get_db
-from models import CustomProjectTemplate, CustomerContact, HardwareOrderWorkflow, IntakeEmail, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote, ProjectWorkItem, PsaTicketWorkflow
+from models import AutomationEvent, CustomProjectTemplate, CustomerContact, HardwareOrderWorkflow, IntakeEmail, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote, ProjectWorkItem, PsaTicketWorkflow
 from schemas import (
     ContactCreate, ContactOut, ContactUpdate, IntakeConvert, IntakeEmailCreate, IntakeEmailOut,
     MilestoneCreate, MilestoneOut, MilestoneUpdate, NoteOut, ProjectCreate, ProjectOut, ProjectUpdate,
@@ -63,6 +64,13 @@ INLINE_ATTACHMENT_TYPES = {"image/png", "image/jpeg", "application/pdf"}
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 GRAPH_API = "https://graph.microsoft.com/v1.0"
 logger = logging.getLogger("bullfrog.graph")
+REVIO_PAYMENT_WEBHOOK_EVENTS = {
+    "PAYMENT_CREATED", "PAYMENT_REAPPLIED", "PAYMENT_REVERSED",
+    "PAYMENT_VOID", "PAYMENT_BOUNCED",
+}
+REVIO_PAYMENT_PROBLEM_EVENTS = {
+    "PAYMENT_REVERSED", "PAYMENT_VOID", "PAYMENT_BOUNCED",
+}
 
 TEMPLATES = {
     "Webex Calling": [
@@ -2268,6 +2276,50 @@ async def revio_billing_bill_payment_status(
         "payments": payment_details,
     }
 
+
+def revio_webhook_value(payload: dict, *names: str):
+    """Read webhook fields across Rev.io's snake/camel/Pascal case formats."""
+    wanted = {normalize_customer_name(name) for name in names}
+    nodes = [payload]
+    for wrapper in ("event", "notification", "data", "payload"):
+        nested = payload.get(wrapper)
+        if isinstance(nested, dict):
+            nodes.append(nested)
+    for node in nodes:
+        for key, value in node.items():
+            if normalize_customer_name(str(key)) in wanted and value not in (None, ""):
+                return value
+    return None
+
+
+def normalize_revio_webhook_event_type(value) -> str:
+    return re.sub(r"[^A-Z0-9]+", "_", str(value or "").strip().upper()).strip("_")
+
+
+async def revio_billing_payment_event_context(payment_id: str) -> dict:
+    payment_payload, applied_payload = await asyncio.gather(
+        revio_billing_get(f"/v1/Payments/{quote(payment_id, safe='')}"),
+        revio_billing_get(f"/v1/Payments/{quote(payment_id, safe='')}/billappliedto"),
+    )
+    records = revio_records(payment_payload)
+    payment = records[0] if records else payment_payload.get("record") or payment_payload
+    if not isinstance(payment, dict):
+        raise RuntimeError(f"Rev.io Payment {payment_id} returned an unexpected response")
+    customer_id = revio_value(payment, "customer_id", "customerId")
+    bill_ids = {
+        row["bill_id"]
+        for row in revio_billing_application_rows(applied_payload)
+        if row.get("bill_id")
+    }
+    displayed_bill_id = revio_value(payment, "bill_id", "billId")
+    if displayed_bill_id not in (None, "", 0, "0"):
+        bill_ids.add(str(displayed_bill_id))
+    return {
+        "payment_id": payment_id,
+        "customer_id": str(customer_id) if customer_id not in (None, "") else None,
+        "bill_ids": sorted(bill_ids),
+    }
+
 def record_automation_activity(db: Session, project_id: int, action: str, description: str, old_value=None, new_value=None):
     db.add(ProjectActivity(
         project_id=project_id, actor_name="Bullfrog Automation", actor_email=None,
@@ -2851,10 +2903,31 @@ async def process_hardware_order_workflow(project_id: int):
     try:
         workflow = db.scalar(select(HardwareOrderWorkflow).where(HardwareOrderWorkflow.project_id == project_id))
         project = db.get(Project, project_id)
-        if not workflow or not project or workflow.status in ("Sent", "Sending", "Needs Review"):
+        if (
+            not workflow
+            or not project
+            or workflow.email_sent_at is not None
+            or workflow.status in ("Sent", "Sending", "Needs Review")
+        ):
             return
         previous_status = workflow.status
         previous_balance = workflow.last_balance
+        claim = db.execute(
+            update(HardwareOrderWorkflow)
+            .where(
+                HardwareOrderWorkflow.id == workflow.id,
+                HardwareOrderWorkflow.email_sent_at.is_(None),
+                HardwareOrderWorkflow.status.notin_(("Sent", "Sending", "Needs Review", "Checking")),
+            )
+            .values(status="Checking", updated_at=datetime.utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        if claim.rowcount != 1:
+            db.rollback()
+            return
+        db.commit()
+        workflow = db.get(HardwareOrderWorkflow, workflow.id)
+        project = db.get(Project, project_id)
         billing_customer = await revio_billing_find_customer(project.customer)
         signed_quote = await revio_billing_selected_source(billing_customer["customer_id"], project.quote_id)
         payment_status = await revio_billing_bill_payment_status(
@@ -2944,6 +3017,114 @@ async def process_hardware_order_workflow(project_id: int):
     finally:
         db.close()
 
+
+async def process_revio_webhook_event(event_id: int):
+    db = SessionLocal()
+    try:
+        event = db.get(AutomationEvent, event_id)
+        if not event or event.status == "Completed":
+            return
+        event.status = "Processing"
+        event.attempts += 1
+        event.last_error = None
+        event_type = event.event_type
+        payment_id = event.object_id
+        db.commit()
+    finally:
+        db.close()
+
+    try:
+        if event_type not in REVIO_PAYMENT_WEBHOOK_EVENTS:
+            db = SessionLocal()
+            try:
+                event = db.get(AutomationEvent, event_id)
+                event.status = "Ignored"
+                event.detail = f"No Bullfrog automation is configured for {event_type}."
+                event.processed_at = datetime.utcnow()
+                db.commit()
+            finally:
+                db.close()
+            return
+        if not payment_id or not str(payment_id).isdigit():
+            raise RuntimeError(f"{event_type} did not include a numeric payment object ID")
+
+        context = await revio_billing_payment_event_context(str(payment_id))
+        bill_ids = context["bill_ids"]
+        db = SessionLocal()
+        try:
+            event = db.get(AutomationEvent, event_id)
+            event.customer_id = context["customer_id"]
+            source_ids = [value for bill_id in bill_ids for value in (f"bill:{bill_id}", bill_id)]
+            rows = []
+            if source_ids:
+                rows = list(db.execute(
+                    select(Project, HardwareOrderWorkflow)
+                    .join(HardwareOrderWorkflow, HardwareOrderWorkflow.project_id == Project.id)
+                    .where(Project.quote_id.in_(source_ids))
+                ).all())
+
+            affected_project_ids = []
+            review_project_ids = set()
+            review_projects = []
+            for project, workflow in rows:
+                affected_project_ids.append(project.id)
+                if event_type in REVIO_PAYMENT_PROBLEM_EVENTS and workflow.email_sent_at is not None:
+                    workflow.status = "Needs Review"
+                    workflow.last_error = (
+                        f"Rev.io reported {event_type.replace('_', ' ').title()} for Payment "
+                        f"#{payment_id} after the hardware-order email was sent."
+                    )
+                    workflow.last_checked_at = datetime.utcnow()
+                    record_automation_activity(
+                        db,
+                        project.id,
+                        "hardware_payment_reversed",
+                        workflow.last_error,
+                    )
+                    review_projects.append(project.customer)
+                    review_project_ids.add(project.id)
+                elif workflow.email_sent_at is None:
+                    workflow.status = "Pending"
+                    workflow.last_error = None
+
+            if len(rows) == 1:
+                event.project_id = rows[0][0].id
+            bill_label = ", ".join(f"#{bill_id}" for bill_id in bill_ids) or "no bill returned"
+            if not rows:
+                event.status = "Ignored"
+                event.detail = (
+                    f"Payment #{payment_id} referenced {bill_label}; no active Hardware Payment "
+                    "workflow is linked to those bills."
+                )
+            else:
+                event.status = "Completed"
+                event.detail = (
+                    f"Matched Payment #{payment_id} to {len(rows)} project(s) using Bill(s) "
+                    f"{bill_label}."
+                )
+                if review_projects:
+                    event.detail += " Payment reversal review required for: " + ", ".join(review_projects) + "."
+            event.processed_at = datetime.utcnow()
+            db.commit()
+        finally:
+            db.close()
+
+        for project_id in affected_project_ids:
+            if project_id not in review_project_ids:
+                await process_hardware_order_workflow(project_id)
+    except Exception as exc:
+        logger.exception("Rev.io webhook event %s failed", event_id)
+        db = SessionLocal()
+        try:
+            event = db.get(AutomationEvent, event_id)
+            if event:
+                event.status = "Failed"
+                event.last_error = str(exc)[:2000]
+                event.processed_at = datetime.utcnow()
+                db.commit()
+        finally:
+            db.close()
+
 async def hardware_order_maintenance():
     interval = max(300, int(os.getenv("HARDWARE_ORDER_CHECK_SECONDS", "3600")))
     while True:
@@ -2952,7 +3133,8 @@ async def hardware_order_maintenance():
         try:
             project_ids = list(db.scalars(
                 select(HardwareOrderWorkflow.project_id).where(
-                    HardwareOrderWorkflow.status.in_(("Pending", "Waiting for zero balance", "Retry"))
+                    HardwareOrderWorkflow.status.in_(("Pending", "Waiting for zero balance", "Retry")),
+                    HardwareOrderWorkflow.email_sent_at.is_(None),
                 )
             ).all())
         finally:
@@ -2999,6 +3181,7 @@ async def require_webex_login(request: Request, call_next):
         or path == "/auth/callback"
         or path == "/api/intake/email"
         or path == "/api/graph/notifications"
+        or path.startswith("/api/webhooks/revio-billing/")
         or path.startswith("/api/mcp/")
         or path.startswith("/static/")
     )
@@ -3135,6 +3318,189 @@ def home(request: Request):
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/api/webhooks/revio-billing/{token}")
+async def receive_revio_billing_webhook(
+    token: str, request: Request, background_tasks: BackgroundTasks
+):
+    expected_token = (os.getenv("REVIO_WEBHOOK_TOKEN") or "").strip()
+    if not expected_token:
+        raise HTTPException(503, "Rev.io Billing webhooks are not configured")
+    if not secrets.compare_digest(token, expected_token):
+        raise HTTPException(404, "Webhook receiver not found")
+
+    raw_body = await request.body()
+    confirmation_code = request.headers.get("X-Hook-Secret")
+    try:
+        payload = json.loads(raw_body) if raw_body.strip() else {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = {}
+
+    # Rev.io activates a receiver by sending its confirmation code in this
+    # header. Echoing it with 200 OK activates the receiver immediately.
+    probe = payload if isinstance(payload, dict) else {}
+    if confirmation_code and not revio_webhook_value(probe, "event_id", "eventId", "event_type", "eventType"):
+        return JSONResponse(
+            {"ok": True, "receiver": "confirmed"},
+            headers={"X-Hook-Secret": confirmation_code},
+        )
+
+    notifications = payload if isinstance(payload, list) else [payload]
+    queued = []
+    db = SessionLocal()
+    try:
+        for notification in notifications:
+            if not isinstance(notification, dict):
+                continue
+            event_type = normalize_revio_webhook_event_type(
+                revio_webhook_value(notification, "event_type", "eventType", "type")
+            )
+            if not event_type:
+                continue
+            object_id = revio_webhook_value(
+                notification, "object_id", "objectId", "resource_id", "resourceId"
+            )
+            provider_event_id = revio_webhook_value(
+                notification, "event_id", "eventId", "id"
+            )
+            fingerprint = hashlib.sha256(
+                json.dumps(notification, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            event_key = f"revio:{provider_event_id or fingerprint}"
+            existing = db.scalar(
+                select(AutomationEvent).where(AutomationEvent.event_key == event_key)
+            )
+            if existing:
+                queued.append({"id": existing.id, "status": existing.status, "duplicate": True})
+                continue
+            event = AutomationEvent(
+                event_key=event_key,
+                source="Rev.io Billing",
+                event_type=event_type,
+                object_id=str(object_id) if object_id not in (None, "") else None,
+                status="Received",
+                payload_json=json.dumps(notification, sort_keys=True, default=str),
+                detail="Webhook received and queued for processing.",
+            )
+            db.add(event)
+            db.flush()
+            queued.append({"id": event.id, "status": event.status, "duplicate": False})
+        db.commit()
+    finally:
+        db.close()
+
+    for item in queued:
+        if not item["duplicate"]:
+            background_tasks.add_task(process_revio_webhook_event, item["id"])
+    return {"ok": True, "accepted": len(queued), "events": queued}
+
+
+@app.get("/api/automations")
+def get_automation_center(db: Session = Depends(get_db)):
+    interval = max(300, int(os.getenv("HARDWARE_ORDER_CHECK_SECONDS", "3600")))
+    workflow_rows = list(db.execute(
+        select(HardwareOrderWorkflow, Project)
+        .join(Project, Project.id == HardwareOrderWorkflow.project_id)
+        .order_by(HardwareOrderWorkflow.updated_at.desc())
+    ).all())
+    workflows = []
+    for workflow, project in workflow_rows:
+        next_check = None
+        if workflow.email_sent_at is None and workflow.status in ("Pending", "Waiting for zero balance", "Retry"):
+            anchor = workflow.last_checked_at or workflow.created_at
+            next_check = anchor + timedelta(seconds=interval)
+        workflows.append({
+            "id": workflow.id,
+            "project_id": project.id,
+            "customer": project.customer,
+            "project_name": project.project_name,
+            "billing_source": project.quote_id,
+            "status": workflow.status,
+            "remaining_balance": workflow.last_balance,
+            "last_checked_at": workflow.last_checked_at,
+            "next_check_at": next_check,
+            "email_sent_at": workflow.email_sent_at,
+            "last_error": workflow.last_error,
+        })
+    events = [{
+        "id": event.id,
+        "source": event.source,
+        "event_type": event.event_type,
+        "object_id": event.object_id,
+        "customer_id": event.customer_id,
+        "project_id": event.project_id,
+        "status": event.status,
+        "attempts": event.attempts,
+        "detail": event.detail,
+        "last_error": event.last_error,
+        "received_at": event.received_at,
+        "processed_at": event.processed_at,
+    } for event in db.scalars(
+        select(AutomationEvent).order_by(AutomationEvent.received_at.desc()).limit(100)
+    ).all()]
+    attention_statuses = {"Retry", "Needs Review", "Failed"}
+    return {
+        "summary": {
+            "active": sum(item["email_sent_at"] is None for item in workflows),
+            "waiting": sum(item["status"] == "Waiting for zero balance" for item in workflows),
+            "sent": sum(item["email_sent_at"] is not None for item in workflows),
+            "attention": (
+                sum(item["status"] in attention_statuses for item in workflows)
+                + sum(item["status"] in attention_statuses for item in events)
+            ),
+        },
+        "webhook": {
+            "configured": bool((os.getenv("REVIO_WEBHOOK_TOKEN") or "").strip()),
+            "events": sorted(REVIO_PAYMENT_WEBHOOK_EVENTS),
+            "fallback_interval_seconds": interval,
+        },
+        "workflows": workflows,
+        "events": events,
+    }
+
+
+@app.post("/api/automations/hardware/{project_id}/run")
+async def run_hardware_automation_now(
+    project_id: int, background_tasks: BackgroundTasks,
+    request: Request, db: Session = Depends(get_db),
+):
+    project = db.get(Project, project_id)
+    workflow = db.scalar(select(HardwareOrderWorkflow).where(
+        HardwareOrderWorkflow.project_id == project_id
+    ))
+    if not project or not workflow:
+        raise HTTPException(404, "Hardware Payment workflow not found")
+    if workflow.email_sent_at is not None:
+        raise HTTPException(409, "The hardware-order email has already been sent")
+    old_status = workflow.status
+    workflow.status = "Pending"
+    workflow.last_error = None
+    record_activity(
+        db, project_id, request, "automation_run_requested",
+        "Requested an immediate Hardware Payment Check from the Automation Center",
+        field_name="hardware_order_workflow", old_value=old_status, new_value="Pending",
+    )
+    db.commit()
+    background_tasks.add_task(process_hardware_order_workflow, project_id)
+    return {"queued": True, "project_id": project_id}
+
+
+@app.post("/api/automations/events/{event_id}/retry")
+async def retry_automation_event(
+    event_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)
+):
+    event = db.get(AutomationEvent, event_id)
+    if not event:
+        raise HTTPException(404, "Automation event not found")
+    if event.status not in ("Failed", "Received"):
+        raise HTTPException(409, f"A {event.status} event cannot be retried")
+    event.status = "Received"
+    event.last_error = None
+    event.detail = "Manual retry queued from the Automation Center."
+    db.commit()
+    background_tasks.add_task(process_revio_webhook_event, event_id)
+    return {"queued": True, "event_id": event_id}
 
 @app.get("/api/me")
 def get_current_user(request: Request):
@@ -3960,10 +4326,10 @@ async def update_milestone(
         if not workflow:
             workflow = HardwareOrderWorkflow(project_id=item.project_id, status="Pending")
             db.add(workflow)
-        elif workflow.status != "Sent":
+        elif workflow.email_sent_at is None:
             workflow.status = "Pending"
             workflow.last_error = None
-        if workflow.status != "Sent":
+        if workflow.email_sent_at is None:
             record_automation_activity(
                 db, item.project_id, "hardware_order_queued",
                 "Hardware Payment Check is complete; queued the selected Rev.io Bill payment check",
@@ -3989,7 +4355,7 @@ async def update_milestone(
                 )
 
     db.commit(); db.refresh(item)
-    if should_check_hardware_order and workflow.status != "Sent":
+    if should_check_hardware_order and workflow.email_sent_at is None:
         background_tasks.add_task(process_hardware_order_workflow, item.project_id)
     if should_send_go_live:
         background_tasks.add_task(

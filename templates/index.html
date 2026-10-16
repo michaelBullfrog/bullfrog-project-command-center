@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Bullfrog Project Command Center</title>
-  <link rel="stylesheet" href="/static/styles.css?v=1.13.0">
+  <link rel="stylesheet" href="/static/styles.css?v=1.14.0">
 </head>
 <body>
   <aside class="sidebar">
@@ -14,6 +14,7 @@
       <button class="nav-link" data-view="projects">☷ <span>Projects</span></button>
       <button class="nav-link" data-view="intake">✉ <span>Project Intake</span><span class="nav-count hidden" id="intake-nav-count"></span></button>
       <button class="nav-link" data-view="team">♙ <span>Team View</span></button>
+      <button class="nav-link" data-view="automations">↻ <span>Automations</span><span class="nav-count hidden" id="automation-nav-count"></span></button>
       <button class="nav-link" data-view="templates">⚙ <span>Project Types</span></button>
     </nav>
     <button class="primary wide" id="sidebar-new">＋ New Project</button>
@@ -66,6 +67,23 @@
         <div class="panel-head"><div><p class="eyebrow">WORKFLOW DESIGNER</p><h2>Custom Project Types</h2></div><button class="primary" id="new-template">＋ Add Project Type</button></div>
         <p class="section-intro">Create reusable project types with their own Rev PSA phases, milestones, tickets, and scheduled tasks.</p>
         <div id="template-list" class="template-list"></div>
+      </article>
+    </section>
+
+    <section id="automations-view" class="view hidden">
+      <div class="metric-grid" id="automation-metrics"></div>
+      <article class="panel automation-webhook-panel">
+        <div class="panel-head"><div><p class="eyebrow">REAL-TIME EVENTS</p><h2>Rev.io Billing Webhook</h2></div><span id="webhook-status" class="automation-status"></span></div>
+        <p class="section-intro" id="webhook-description">Loading webhook configuration…</p>
+        <div class="automation-event-chips" id="webhook-events"></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head"><div><p class="eyebrow">PAYMENT AUTOMATION</p><h2>Hardware Payment Workflows</h2></div><button class="secondary" id="refresh-automations">↻ Refresh</button></div>
+        <div class="table-wrap"><table class="automation-table"><thead><tr><th>Customer / Project</th><th>Bill</th><th>Status</th><th>Remaining</th><th>Last Check</th><th>Next Check</th><th>Action</th></tr></thead><tbody id="automation-workflows"></tbody></table></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head"><div><p class="eyebrow">EVENT LOG</p><h2>Recent Webhook Events</h2></div><span class="count-pill" id="automation-event-count"></span></div>
+        <div class="table-wrap"><table class="automation-table"><thead><tr><th>Received</th><th>Event</th><th>Payment</th><th>Status</th><th>Result</th><th>Action</th></tr></thead><tbody id="automation-events-table"></tbody></table></div>
       </article>
     </section>
   </main>
@@ -133,6 +151,6 @@
     </div>
   </div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=1.13.6"></script>
+  <script src="/static/app.js?v=1.14.0"></script>
 </body>
 </html>

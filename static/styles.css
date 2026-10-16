@@ -85,3 +85,12 @@ button:disabled{opacity:.72;cursor:wait}
 .work-link input{width:190px;margin-top:4px;background:#fff}
 .template-work-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-top:10px}
 @media(max-width:760px){.work-head,.work-item{align-items:stretch;grid-template-columns:1fr;flex-direction:column}.work-link{align-items:stretch;flex-direction:column}.work-link input{width:100%}.template-work-grid{grid-template-columns:1fr}}
+
+
+/* Automation Center */
+.automation-webhook-panel{border-left:4px solid var(--frog-lime)}
+.automation-webhook-panel h2{margin-bottom:6px}.automation-webhook-panel p{max-width:780px;margin:0;color:var(--muted);font-size:12px;line-height:1.55}
+.automation-status{display:inline-flex;align-items:center;border-radius:18px;padding:5px 9px;font-size:9px;font-weight:900;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+.status-completed,.status-sent{background:#e3f5e5;color:#08783b}.status-waiting-for-zero-balance,.status-pending,.status-processing,.status-received,.status-checking{background:#fff0d5;color:#86570a}.status-needs-review,.status-retry,.status-failed{background:#fde5e3;color:#a02c25}.status-ignored{background:#edf1ee;color:#66736b}
+.automation-event-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px}.automation-event-chips span{border:1px solid #dce8da;border-radius:15px;background:#f6faf4;color:#3d5945;padding:5px 8px;font-size:9px;font-weight:800}
+.automation-table td{vertical-align:top}.automation-error{max-width:360px;margin-top:7px;color:#a02c25;font-size:10px;line-height:1.4}.automation-detail{max-width:520px;color:#56655c;font-size:11px;line-height:1.45}.automation-complete{display:block;max-width:155px;color:var(--green-dark);font-size:10px;font-weight:800;line-height:1.4}.secondary.compact{padding:7px 9px;font-size:10px;white-space:nowrap}.automation-error-card{grid-column:1/-1;border:1px solid #efb2b2;border-radius:10px;background:#fff4f4;color:#a02c25;padding:14px;font-size:12px;font-weight:750}
