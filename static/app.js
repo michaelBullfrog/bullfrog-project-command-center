@@ -21,7 +21,7 @@ function milestoneActionText(milestone,project){
  const actions=[];
  if(project.revio_project_id)actions.push("Checking or unchecking also completes or reopens this milestone in Rev PSA.");
  const key=milestoneKey(milestone.name);
- if(key==="hardwarepaymentcheck")actions.push("When checked, starts hourly Rev.io Billing balance checks; at $0, emails Sales with the order details.");
+ if(key==="hardwarepaymentcheck")actions.push("When checked, checks the selected Rev.io Bill hourly. Once payments applied to that bill reduce its remaining balance to $0.00, Sales receives the hardware-order email.");
  if(key==="focreceived")actions.push("While incomplete, the daily review alerts PSA Notifications when the FOC is approaching or within 7 days.");
  if(key==="golive")actions.push("When checked, emails Carrie the go-live summary and creates an Onboarding ticket for the CSM to update the Rev PSA Overview with final license counts.");
  return actions.join(" ");
