@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 52416)
-Total output lines: 4474
-
 import asyncio
 import hashlib
 import html
@@ -1996,7 +1993,213 @@ async def revio_billing_selected_source(customer_id: str, selected_id: str | Non
 
     if source_type == "request":
         if not source_value.isdigit():
-            raise RuntimeError("The selected Rev.io Q…2416 tokens truncated…(payload)
+            raise RuntimeError("The selected Rev.io Quote ID is invalid")
+        statuses = await revio_billing_request_statuses()
+        payload = await revio_billing_get(
+            "/v1/Requests",
+            {"search.request_id": source_value, "search.page_size": 10},
+        )
+        matches = [
+            item for item in revio_records(payload)
+            if str(revio_value(item, "request_id", "requestId", "id")) == source_value
+            and str(revio_value(item, "customer_id", "customerId")) == str(customer_id)
+        ]
+        if len(matches) != 1:
+            if legacy_numeric:
+                # Projects saved before typed source IDs were introduced only
+                # contain a number. Detect whether that number is actually a
+                # bill or charge before asking the user to reselect it.
+                bill_payload, charge_payload = await asyncio.gather(
+                    revio_billing_get("/v1/Bills", {"search.bill_id": source_value, "search.page_size": 10}),
+                    revio_billing_get("/v1/Charges", {"search.charge_id": source_value, "search.page_size": 10}),
+                )
+                bill_match = any(
+                    str(revio_value(item, "bill_id", "billId", "id")) == source_value
+                    and str(revio_value(item, "customer_id", "customerId")) == str(customer_id)
+                    for item in revio_records(bill_payload)
+                )
+                if bill_match:
+                    return await revio_billing_selected_source(customer_id, f"bill:{source_value}")
+                charge_match = any(
+                    str(revio_value(item, "charge_id", "chargeId", "id")) == source_value
+                    and str(revio_value(item, "customer_id", "customerId")) == str(customer_id)
+                    for item in revio_records(charge_payload)
+                )
+                if charge_match:
+                    return await revio_billing_selected_source(customer_id, f"charge:{source_value}")
+            raise RuntimeError(
+                f"Rev.io source {source_value} was not found for the matched Billing customer. "
+                "Edit the project and select a Quote, Bill, or Charges entry again."
+            )
+        request_item = matches[0]
+        _, request_status = revio_billing_quote_status(request_item, statuses)
+        if request_status.get("type") == "CANCELED":
+            raise RuntimeError(f"Rev.io Quote {source_value} is canceled")
+        products_payload = await revio_billing_get(
+            "/v1/RequestProducts",
+            {"search.request_id": source_value, "search.page_size": 100},
+        )
+        products = [
+            {
+                "description": str(revio_value(item, "description", "name") or f"Product {revio_value(item, 'product_id', 'productId') or ''}").strip(),
+                "quantity": revio_value(item, "quantity", "qty"),
+                "rate": revio_value(item, "rate", "price", "amount"),
+            }
+            for item in revio_records(products_payload)
+        ]
+        return {
+            "source_id": f"request:{source_value}",
+            "source_type": "Quote",
+            "source_number": source_value,
+            "quote_id": source_value,
+            "description": str(revio_value(request_item, "description", "name", "title") or "No quote description"),
+            "status": request_status["name"],
+            "signed_at": revio_value(request_item, "status_date", "statusDate", "created_date", "createdDate"),
+            "products": products,
+        }
+
+    if source_type == "bill":
+        if not source_value.isdigit():
+            raise RuntimeError("The selected Rev.io Bill ID is invalid")
+        bill_payload, charges_payload = await asyncio.gather(
+            revio_billing_get("/v1/Bills", {"search.bill_id": source_value, "search.page_size": 10}),
+            revio_billing_get("/v1/Charges", {"search.bill_id": source_value, "search.page_size": 100}),
+        )
+        matches = [
+            item for item in revio_records(bill_payload)
+            if str(revio_value(item, "bill_id", "billId", "id")) == source_value
+            and str(revio_value(item, "customer_id", "customerId")) == str(customer_id)
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(f"Rev.io Bill {source_value} was not found for the matched Billing customer")
+        bill = matches[0]
+        charges = [
+            item for item in revio_records(charges_payload)
+            if str(revio_value(item, "customer_id", "customerId") or customer_id) == str(customer_id)
+        ]
+        bill_number = revio_value(bill, "bill_number", "billNumber", "invoice_number", "invoiceNumber") or source_value
+        amount_due = revio_value(bill, "amount_due", "amountDue")
+        if amount_due in (None, ""):
+            raise RuntimeError(f"Rev.io Bill {bill_number} did not include an amount due")
+        try:
+            bill_amount_due = Decimal(str(amount_due))
+        except InvalidOperation as exc:
+            raise RuntimeError(f"Rev.io Bill {bill_number} returned an invalid amount due") from exc
+        return {
+            "source_id": f"bill:{source_value}",
+            "source_type": "Bill",
+            "source_number": str(bill_number),
+            "quote_id": source_value,
+            "bill_id": source_value,
+            "bill_amount_due": bill_amount_due,
+            "description": f"Rev.io Bill #{bill_number}",
+            "status": "Billed",
+            "signed_at": revio_value(bill, "cycle_date", "cycleDate", "created_date", "createdDate", "due_date", "dueDate"),
+            "products": await revio_billing_charge_lines(charges),
+        }
+
+    if source_type == "charge":
+        if not source_value.isdigit():
+            raise RuntimeError("The selected Rev.io Charge ID is invalid")
+        payload = await revio_billing_get(
+            "/v1/Charges",
+            {"search.charge_id": source_value, "search.page_size": 10},
+        )
+        matches = [
+            item for item in revio_records(payload)
+            if str(revio_value(item, "charge_id", "chargeId", "id")) == source_value
+            and str(revio_value(item, "customer_id", "customerId")) == str(customer_id)
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(f"Rev.io Charge {source_value} was not found for the matched Billing customer")
+        charge = matches[0]
+        return {
+            "source_id": f"charge:{source_value}",
+            "source_type": "Charge",
+            "source_number": source_value,
+            "quote_id": source_value,
+            "description": str(
+                revio_value(charge, "description", "name", "charge_description", "chargeDescription")
+                or f"Rev.io Charge #{source_value}"
+            ),
+            "status": "Charged",
+            "signed_at": revio_value(charge, "created_date", "createdDate"),
+            "products": await revio_billing_charge_lines([charge]),
+        }
+
+    if source_type == "charges" and source_value == "unbilled":
+        payload = await revio_billing_get(
+            "/v1/Charges",
+            {"search.customer_id": customer_id, "search.page_size": 100, "search.sort": "-created_date"},
+        )
+        charges = [
+            item for item in revio_records(payload)
+            if revio_value(item, "bill_id", "billId") in (None, "", 0, "0")
+        ]
+        if not charges:
+            raise RuntimeError("No current unbilled Rev.io charges were found for this customer")
+        return {
+            "source_id": "charges:unbilled",
+            "source_type": "Charges",
+            "source_number": "Unbilled",
+            "quote_id": "unbilled",
+            "description": "Current unbilled Rev.io charges",
+            "status": "Unbilled",
+            "signed_at": max(
+                (str(revio_value(item, "created_date", "createdDate") or "") for item in charges),
+                default="",
+            ) or None,
+            "products": await revio_billing_charge_lines(charges),
+        }
+
+    raise RuntimeError("The selected Rev.io billing source is not supported")
+
+
+def revio_billing_flag(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().casefold() in ("1", "true", "yes", "y")
+
+
+def revio_billing_application_rows(payload) -> list[dict]:
+    """Extract BillAppliedTo rows despite legacy response-wrapper variations."""
+    rows: list[dict] = []
+
+    def visit(value):
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+
+        bill_id = revio_value(
+            value, "bill_id", "billId", "statement_id", "statementId"
+        )
+        amount = revio_value(
+            value, "amount_applied", "amountApplied", "applied_amount",
+            "appliedAmount", "amount",
+        )
+        if bill_id in (None, "") and amount not in (None, ""):
+            bill_id = revio_value(value, "id")
+        if bill_id not in (None, "") and amount not in (None, ""):
+            rows.append({"bill_id": str(bill_id), "amount": amount})
+            return
+
+        # A few older Rev.io tenants return a bill-to-amount object instead of
+        # named fields, for example {"79311": 1089.50}.
+        for key, item in value.items():
+            if str(key).isdigit() and isinstance(item, (int, float, Decimal, str)):
+                try:
+                    Decimal(str(item))
+                except InvalidOperation:
+                    pass
+                else:
+                    rows.append({"bill_id": str(key), "amount": item})
+                    continue
+            visit(item)
+
+    visit(payload)
     return rows
 
 
