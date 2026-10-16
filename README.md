@@ -120,4 +120,4 @@ The project form can create a complete Rev PSA project from the Bullfrog dashboa
 
 The form loads Rev PSA project statuses and priorities dynamically, sends the customer, dates, budget, hours, billable flag, owner, description, notes, and matching team members, then creates each Bullfrog checklist item as a Rev PSA project milestone. The returned Rev PSA Project ID and milestone IDs are saved locally. Project creation can be retried safely when the Rev PSA Project ID has not yet been returned.
 
-Project work-item endpoints only link existing Rev PSA tickets or calendar tasks. Milestone ticket automation remains disabled unless `REVIO_PSA_TICKET_AUTOMATION_ENABLED=true`.
+Project work items create and link Rev PSA tickets or calendar tasks to their matching phases. The Go-Live milestone always creates a CSM ticket to update the Rev PSA Overview with final license counts. The broader legacy milestone ticket chain remains disabled unless `REVIO_PSA_TICKET_AUTOMATION_ENABLED=true`.

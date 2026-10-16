@@ -23,7 +23,7 @@ function milestoneActionText(milestone,project){
  const key=milestoneKey(milestone.name);
  if(key==="hardwarepaymentcheck")actions.push("When checked, starts hourly Rev.io Billing balance checks; at $0, emails Sales with the order details.");
  if(key==="focreceived")actions.push("While incomplete, the daily review alerts PSA Notifications when the FOC is approaching or within 7 days.");
- if(key==="golive")actions.push("When checked, immediately emails Carrie the customer and project go-live summary.");
+ if(key==="golive")actions.push("When checked, emails Carrie the go-live summary and creates an Onboarding ticket for the CSM to update the Rev PSA Overview with final license counts.");
  return actions.join(" ");
 }
 function toast(message){const el=$("#toast");el.textContent=message;el.classList.remove("hidden");setTimeout(()=>el.classList.add("hidden"),2600)}

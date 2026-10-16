@@ -123,7 +123,7 @@ PHASE_TEMPLATES = {
 
 WORK_ITEM_TEMPLATES = {
     "Webex Calling": [
-        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "sales", "hours": 1.0, "description": "Review signed scope, ownership, dependencies, and target dates with the Bullfrog delivery team."},
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Review signed scope, ownership, dependencies, and target dates with the Bullfrog delivery team."},
         {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Hold the customer kickoff and confirm contacts, scope, schedule, and required inputs."},
         {"phase": "Design & Discovery", "name": "Calling Design and Call Flow", "item_type": "Ticket", "owner": "engineer", "hours": 3.0, "description": "Document dial plan, calling features, auto attendants, queues, hours, caller ID, and emergency calling requirements."},
         {"phase": "Design & Discovery", "name": "Collect User and Porting Documents", "item_type": "Ticket", "owner": "csm", "hours": 1.5, "description": "Collect and validate the user spreadsheet, number inventory, LOA, CSR, and customer approvals."},
@@ -136,7 +136,7 @@ WORK_ITEM_TEMPLATES = {
         {"phase": "Go Live & Closeout", "name": "Documentation and Closeout", "item_type": "Ticket", "owner": "csm", "hours": 1.0, "description": "Complete documentation, acceptance, handoff, and project closeout."},
     ],
     "Webex Contact Center": [
-        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "sales", "hours": 1.0, "description": "Review scope, ownership, integrations, dependencies, and target dates."},
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Review scope, ownership, integrations, dependencies, and target dates."},
         {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Confirm project scope, contacts, schedule, and required discovery inputs."},
         {"phase": "Design", "name": "Contact Center Discovery and Call Flow", "item_type": "Ticket", "owner": "engineer", "hours": 4.0, "description": "Document entry points, queues, teams, routing, IVR, hours, recording, and reporting requirements."},
         {"phase": "Build & Integration", "name": "Build Contact Center Configuration", "item_type": "Ticket", "owner": "engineer", "hours": 8.0, "description": "Configure users, agents, teams, queues, routing flows, desktop profiles, and required integrations."},
@@ -147,7 +147,7 @@ WORK_ITEM_TEMPLATES = {
         {"phase": "Go Live & Closeout", "name": "Documentation and Closeout", "item_type": "Ticket", "owner": "csm", "hours": 1.0, "description": "Complete documentation, acceptance, handoff, and closeout."},
     ],
     "Meraki": [
-        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "sales", "hours": 1.0, "description": "Review scope, hardware, dependencies, and installation targets."},
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Review scope, hardware, dependencies, and installation targets."},
         {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Confirm contacts, topology, schedule, access, and required inputs."},
         {"phase": "Hardware", "name": "Order and Track Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order approved hardware and record shipment and tracking details."},
         {"phase": "Design & Configuration", "name": "Network Design and Configuration", "item_type": "Ticket", "owner": "engineer", "hours": 5.0, "description": "Complete topology, VLAN, addressing, firewall, VPN, switching, and wireless configuration."},
@@ -158,7 +158,7 @@ WORK_ITEM_TEMPLATES = {
         {"phase": "Closeout", "name": "Project Closeout", "item_type": "Ticket", "owner": "csm", "hours": 1.0, "description": "Complete acceptance, internal handoff, and closeout."},
     ],
     "Network": [
-        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "sales", "hours": 1.0, "description": "Review scope, hardware, dependencies, and installation targets."},
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Review scope, hardware, dependencies, and installation targets."},
         {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Confirm contacts, topology, schedule, access, and required inputs."},
         {"phase": "Hardware", "name": "Order and Track Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order approved hardware and record shipment and tracking details."},
         {"phase": "Design & Configuration", "name": "Network Design and Configuration", "item_type": "Ticket", "owner": "engineer", "hours": 5.0, "description": "Complete network design, addressing, security, switching, wireless, and configuration work."},
@@ -168,7 +168,7 @@ WORK_ITEM_TEMPLATES = {
         {"phase": "Closeout", "name": "Project Closeout", "item_type": "Ticket", "owner": "csm", "hours": 1.0, "description": "Complete acceptance, internal handoff, and closeout."},
     ],
     "Other": [
-        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Task", "owner": "sales", "hours": 1.0, "description": "Review scope, ownership, dependencies, and target dates."},
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Review scope, ownership, dependencies, and target dates."},
         {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Confirm customer contacts, scope, schedule, and inputs."},
         {"phase": "Delivery", "name": "Project Delivery Work", "item_type": "Ticket", "owner": "engineer", "hours": 4.0, "description": "Complete the technical implementation and testing work."},
         {"phase": "Closeout", "name": "Customer Follow-Up", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review the completed work with the customer."},
@@ -260,17 +260,31 @@ def project_work_template_key(definition: dict) -> str:
     return re.sub(r"[^a-z0-9]+", "-", raw.casefold()).strip("-")[:180]
 
 def add_project_work_items(db: Session, project: Project):
-    existing = {
-        item.template_key: item for item in db.scalars(
-            select(ProjectWorkItem).where(ProjectWorkItem.project_id == project.id)
-        ).all()
+    existing_items = list(db.scalars(
+        select(ProjectWorkItem).where(ProjectWorkItem.project_id == project.id)
+    ).all())
+    existing = {item.template_key: item for item in existing_items}
+    existing_by_name = {
+        (item.phase_name.strip().casefold(), item.name.strip().casefold()): item
+        for item in existing_items
     }
     for definition in project_work_definitions(project.project_type, db):
         template_key = project_work_template_key(definition)
         owner_role = project_work_owner_role(definition["phase"], definition["name"])
         assignee = work_item_assignee(project, owner_role)
-        current = existing.get(template_key)
+        identity = (definition["phase"].strip().casefold(), definition["name"].strip().casefold())
+        current = existing.get(template_key) or existing_by_name.get(identity)
         if current:
+            if current.item_type != definition["item_type"]:
+                # Tasks and tickets are separate Rev PSA objects. Reset the old
+                # linkage so the next work sync creates the newly requested type.
+                current.revio_item_id = None
+                current.revio_work_item_id = None
+                current.revio_phase_id = None
+                current.status = "Planned"
+                current.sync_error = None
+                current.synced_at = None
+            current.template_key = template_key
             current.phase_name = definition["phase"]
             current.name = definition["name"]
             current.item_type = definition["item_type"]
@@ -278,6 +292,8 @@ def add_project_work_items(db: Session, project: Project):
             current.assignee_name = assignee
             current.description = definition.get("description")
             current.estimated_hours = definition.get("hours")
+            existing[template_key] = current
+            existing_by_name[identity] = current
             continue
         item = ProjectWorkItem(
             project_id=project.id,
@@ -292,6 +308,7 @@ def add_project_work_items(db: Session, project: Project):
         )
         db.add(item)
         existing[template_key] = item
+        existing_by_name[identity] = item
 
 def ensure_project_work_items():
     db = SessionLocal()
@@ -1506,6 +1523,14 @@ PSA_TICKET_RULES = {
         "completed_milestone": "Users Added",
         "work": "Add and configure the users from the completed customer spreadsheet.",
     },
+    "update_go_live_license_count": {
+        "description": "Update Rev PSA Overview with License Count", "assignee": "csm",
+        "work": (
+            "Confirm the final license count at go-live and update the Rev PSA Overview page "
+            "with the customer's deployed license quantities. Include the license breakdown "
+            "and note any difference from the signed proposal."
+        ),
+    },
 }
 
 MILESTONE_TICKET_RULES = {
@@ -1520,6 +1545,7 @@ MILESTONE_TICKET_RULES = {
     "hardwaredelivered": "register_devices",
     "hardwaredelivery": "register_devices",
     "userspreadsheet": "add_users",
+    "golive": "update_go_live_license_count",
 }
 
 def psa_assignee(project: Project, role: str) -> str:
@@ -2280,11 +2306,14 @@ async def psa_ticket_maintenance():
         await asyncio.sleep(interval)
         db = SessionLocal()
         try:
-            workflow_ids = list(db.scalars(
-                select(PsaTicketWorkflow.id).where(
-                    PsaTicketWorkflow.status.in_(("Pending", "Retry", "Open"))
+            workflow_query = select(PsaTicketWorkflow.id).where(
+                PsaTicketWorkflow.status.in_(("Pending", "Retry", "Open"))
+            )
+            if not psa_ticket_automation_enabled():
+                workflow_query = workflow_query.where(
+                    PsaTicketWorkflow.workflow_key == "update_go_live_license_count"
                 )
-            ).all())
+            workflow_ids = list(db.scalars(workflow_query).all())
         finally:
             db.close()
         for workflow_id in workflow_ids:
@@ -2795,15 +2824,16 @@ async def lifespan(app: FastAPI):
     graph_task = asyncio.create_task(graph_subscription_maintenance())
     hardware_task = asyncio.create_task(hardware_order_maintenance())
     notification_task = asyncio.create_task(project_notification_maintenance())
-    psa_ticket_task = asyncio.create_task(psa_ticket_maintenance()) if psa_ticket_automation_enabled() else None
+    # Always maintain the explicitly enabled Go-Live license-count workflow.
+    # The feature flag controls only the broader legacy milestone ticket chain.
+    psa_ticket_task = asyncio.create_task(psa_ticket_maintenance())
     try:
         yield
     finally:
         graph_task.cancel()
         hardware_task.cancel()
         notification_task.cancel()
-        if psa_ticket_task:
-            psa_ticket_task.cancel()
+        psa_ticket_task.cancel()
 
 app = FastAPI(title="Bullfrog Project Command Center", version="1.6.0", lifespan=lifespan)
 def webex_oauth_configured() -> bool:
@@ -3792,7 +3822,12 @@ async def update_milestone(
                 "Hardware Payment Check is complete; queued the Rev.io Billing balance check",
             )
 
-    if psa_ticket_automation_enabled() and old_status != "Complete" and item.status == "Complete":
+    # Go Live's CSM license-count ticket is an explicitly enabled workflow even
+    # while the older milestone ticket chain remains paused globally.
+    milestone_ticket_enabled = (
+        psa_ticket_automation_enabled() or normalized_milestone == "golive"
+    )
+    if milestone_ticket_enabled and old_status != "Complete" and item.status == "Complete":
         workflow_key = MILESTONE_TICKET_RULES.get(normalized_milestone)
         if workflow_key:
             project = db.get(Project, item.project_id)
