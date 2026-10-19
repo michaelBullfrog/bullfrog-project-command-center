@@ -1835,6 +1835,23 @@ async def revio_billing_find_customer(customer_name: str) -> dict:
             raise RuntimeError("Rev.io Billing returned an invalid account balance") from exc
     return {"customer_id": str(customer_id), "customer_name": revio_billing_customer_name(customer), "balance": balance}
 
+
+async def revio_billing_customer_by_id(customer_id: str) -> dict | None:
+    payload = await revio_billing_get(
+        "/v1/Customers",
+        {"search.customer_id": customer_id, "search.page_size": 10},
+    )
+    matches = [
+        item for item in revio_records(payload)
+        if str(revio_value(item, "customer_id", "customerId", "id")) == str(customer_id)
+    ]
+    if not matches:
+        return None
+    return {
+        "customer_id": str(customer_id),
+        "customer_name": revio_billing_customer_name(matches[0]),
+    }
+
 async def revio_billing_signed_quotes(customer_id: str) -> list[dict]:
     statuses = await revio_billing_request_statuses()
     payload = await revio_billing_get(
@@ -2316,6 +2333,18 @@ async def revio_billing_payment_event_context(
     if not isinstance(payment, dict):
         raise RuntimeError(f"Rev.io Payment {payment_id} returned an unexpected response")
     customer_id = revio_value(payment, "customer_id", "customerId")
+    customer_name = revio_value(
+        payment, "customer_name", "customerName", "company_name", "companyName"
+    )
+    customer_node = payment.get("customer") or payment.get("Customer")
+    if not customer_name and isinstance(customer_node, dict):
+        customer_name = revio_billing_customer_name(customer_node)
+    if include_bill_items and customer_id not in (None, "") and not customer_name:
+        try:
+            customer = await revio_billing_customer_by_id(str(customer_id))
+            customer_name = customer["customer_name"] if customer else None
+        except Exception as exc:
+            logger.warning("Unable to load Rev.io customer %s for Payment %s: %s", customer_id, payment_id, exc)
     applications = revio_billing_application_rows(applied_payload, require_amount=False)
     bill_ids = {row["bill_id"] for row in applications if row.get("bill_id")}
     displayed_bill_id = revio_value(payment, "bill_id", "billId")
@@ -2327,6 +2356,7 @@ async def revio_billing_payment_event_context(
     context = {
         "payment_id": payment_id,
         "customer_id": str(customer_id) if customer_id not in (None, "") else None,
+        "customer_name": str(customer_name) if customer_name else None,
         "bill_ids": sorted(bill_ids),
         "applications": applications,
         "reference_number": (
@@ -2365,6 +2395,7 @@ async def revio_billing_payment_event_context(
 def automation_event_reference_details(payload_json: str, detail: str | None) -> dict:
     """Read saved payment reference and applied Bill IDs for Automation Center."""
     reference_number = None
+    customer_name = None
     bill_ids: list[str] = []
     applications: list[dict] = []
     bill_details: list[dict] = []
@@ -2375,6 +2406,7 @@ def automation_event_reference_details(payload_json: str, detail: str | None) ->
         if isinstance(metadata, dict):
             details_loaded = bool(metadata.get("bill_items_loaded"))
             reference_number = metadata.get("payment_reference")
+            customer_name = metadata.get("customer_name")
             bill_ids = [
                 str(value) for value in metadata.get("bill_ids", [])
                 if value not in (None, "")
@@ -2391,6 +2423,7 @@ def automation_event_reference_details(payload_json: str, detail: str | None) ->
             bill_ids = re.findall(r"#([^,\s.;]+)", match.group(1))
     return {
         "reference_number": str(reference_number) if reference_number else None,
+        "customer_name": str(customer_name) if customer_name else None,
         "bill_ids": list(dict.fromkeys(bill_ids)),
         "applications": applications if isinstance(applications, list) else [],
         "bill_details": bill_details if isinstance(bill_details, list) else [],
@@ -3165,6 +3198,7 @@ async def process_revio_webhook_event(event_id: int):
             saved_payload["_bullfrog"] = {
                 "bill_items_loaded": False,
                 "payment_reference": context.get("reference_number"),
+                "customer_name": context.get("customer_name"),
                 "bill_ids": bill_ids,
                 "applications": context.get("applications") or [],
                 "bill_details": [],
@@ -3178,6 +3212,12 @@ async def process_revio_webhook_event(event_id: int):
                     .join(HardwareOrderWorkflow, HardwareOrderWorkflow.project_id == Project.id)
                     .where(Project.quote_id.in_(source_ids))
                 ).all())
+            if rows and not context.get("customer_name"):
+                context["customer_name"] = rows[0][0].customer
+                saved_payload["_bullfrog"]["customer_name"] = context["customer_name"]
+                event.payload_json = json.dumps(
+                    saved_payload, sort_keys=True, default=str
+                )
 
             affected_project_ids = []
             review_project_ids = set()
@@ -3552,6 +3592,7 @@ def get_automation_center(db: Session = Depends(get_db)):
             "event_type": event.event_type,
             "object_id": event.object_id,
             "reference_number": references["reference_number"],
+            "customer_name": references["customer_name"],
             "applied_to_bill_ids": references["bill_ids"],
             "applications": references["applications"],
             "bill_details": references["bill_details"],
@@ -3656,6 +3697,7 @@ async def refresh_automation_event_details(
     saved_payload["_bullfrog"] = {
         "bill_items_loaded": True,
         "payment_reference": context.get("reference_number"),
+        "customer_name": context.get("customer_name"),
         "bill_ids": context["bill_ids"],
         "applications": context.get("applications") or [],
         "bill_details": context.get("bill_details") or [],
@@ -3666,6 +3708,7 @@ async def refresh_automation_event_details(
     return {
         "payment_id": event.object_id,
         "reference_number": context.get("reference_number"),
+        "customer_name": context.get("customer_name"),
         "applied_to_bill_ids": context["bill_ids"],
         "applications": context.get("applications") or [],
         "bill_details": context.get("bill_details") or [],
