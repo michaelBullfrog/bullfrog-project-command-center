@@ -2316,10 +2316,46 @@ async def revio_billing_payment_event_context(payment_id: str) -> dict:
     displayed_bill_id = revio_value(payment, "bill_id", "billId")
     if displayed_bill_id not in (None, "", 0, "0"):
         bill_ids.add(str(displayed_bill_id))
+    reference_number = revio_value(
+        payment, "reference_number", "referenceNumber", "check_number", "checkNumber"
+    )
     return {
         "payment_id": payment_id,
         "customer_id": str(customer_id) if customer_id not in (None, "") else None,
         "bill_ids": sorted(bill_ids),
+        "reference_number": (
+            str(reference_number) if reference_number not in (None, "") else None
+        ),
+    }
+
+
+def automation_event_reference_details(payload_json: str, detail: str | None) -> dict:
+    """Read saved payment reference and applied Bill IDs for Automation Center."""
+    reference_number = None
+    bill_ids: list[str] = []
+    details_loaded = False
+    try:
+        payload = json.loads(payload_json or "{}")
+        metadata = payload.get("_bullfrog") if isinstance(payload, dict) else None
+        if isinstance(metadata, dict):
+            details_loaded = bool(metadata.get("details_loaded"))
+            reference_number = metadata.get("payment_reference")
+            bill_ids = [
+                str(value) for value in metadata.get("bill_ids", [])
+                if value not in (None, "")
+            ]
+    except (TypeError, ValueError):
+        pass
+    if not bill_ids and detail:
+        match = re.search(
+            r"(?:using Bill\(s\)|referenced)\s+([^.;]+)", detail, re.IGNORECASE
+        )
+        if match:
+            bill_ids = re.findall(r"#([^,\s.;]+)", match.group(1))
+    return {
+        "reference_number": str(reference_number) if reference_number else None,
+        "bill_ids": list(dict.fromkeys(bill_ids)),
+        "details_loaded": details_loaded,
     }
 
 def record_automation_activity(db: Session, project_id: int, action: str, description: str, old_value=None, new_value=None):
@@ -3081,6 +3117,18 @@ async def process_revio_webhook_event(event_id: int):
         try:
             event = db.get(AutomationEvent, event_id)
             event.customer_id = context["customer_id"]
+            try:
+                saved_payload = json.loads(event.payload_json or "{}")
+            except (TypeError, ValueError):
+                saved_payload = {}
+            if not isinstance(saved_payload, dict):
+                saved_payload = {"notification": saved_payload}
+            saved_payload["_bullfrog"] = {
+                "details_loaded": True,
+                "payment_reference": context.get("reference_number"),
+                "bill_ids": bill_ids,
+            }
+            event.payload_json = json.dumps(saved_payload, sort_keys=True, default=str)
             source_ids = [value for bill_id in bill_ids for value in (f"bill:{bill_id}", bill_id)]
             rows = []
             if source_ids:
@@ -3452,22 +3500,28 @@ def get_automation_center(db: Session = Depends(get_db)):
             "email_sent_at": workflow.email_sent_at,
             "last_error": workflow.last_error,
         })
-    events = [{
-        "id": event.id,
-        "source": event.source,
-        "event_type": event.event_type,
-        "object_id": event.object_id,
-        "customer_id": event.customer_id,
-        "project_id": event.project_id,
-        "status": event.status,
-        "attempts": event.attempts,
-        "detail": event.detail,
-        "last_error": event.last_error,
-        "received_at": event.received_at,
-        "processed_at": event.processed_at,
-    } for event in db.scalars(
+    events = []
+    for event in db.scalars(
         select(AutomationEvent).order_by(AutomationEvent.received_at.desc()).limit(100)
-    ).all()]
+    ).all():
+        references = automation_event_reference_details(event.payload_json, event.detail)
+        events.append({
+            "id": event.id,
+            "source": event.source,
+            "event_type": event.event_type,
+            "object_id": event.object_id,
+            "reference_number": references["reference_number"],
+            "applied_to_bill_ids": references["bill_ids"],
+            "details_loaded": references["details_loaded"],
+            "customer_id": event.customer_id,
+            "project_id": event.project_id,
+            "status": event.status,
+            "attempts": event.attempts,
+            "detail": event.detail,
+            "last_error": event.last_error,
+            "received_at": event.received_at,
+            "processed_at": event.processed_at,
+        })
     attention_statuses = {"Retry", "Needs Review", "Failed"}
     return {
         "summary": {
@@ -3536,6 +3590,37 @@ async def retry_automation_event(
     db.commit()
     background_tasks.add_task(process_revio_webhook_event, event_id)
     return {"queued": True, "event_id": event_id}
+
+
+@app.post("/api/automations/events/{event_id}/details")
+async def refresh_automation_event_details(
+    event_id: int, db: Session = Depends(get_db)
+):
+    event = db.get(AutomationEvent, event_id)
+    if not event:
+        raise HTTPException(404, "Automation event not found")
+    if not event.object_id or not str(event.object_id).isdigit():
+        raise HTTPException(400, "This event does not include a numeric Rev.io Payment ID")
+    context = await revio_billing_payment_event_context(str(event.object_id))
+    try:
+        saved_payload = json.loads(event.payload_json or "{}")
+    except (TypeError, ValueError):
+        saved_payload = {}
+    if not isinstance(saved_payload, dict):
+        saved_payload = {"notification": saved_payload}
+    saved_payload["_bullfrog"] = {
+        "details_loaded": True,
+        "payment_reference": context.get("reference_number"),
+        "bill_ids": context["bill_ids"],
+    }
+    event.payload_json = json.dumps(saved_payload, sort_keys=True, default=str)
+    event.customer_id = context["customer_id"]
+    db.commit()
+    return {
+        "payment_id": event.object_id,
+        "reference_number": context.get("reference_number"),
+        "applied_to_bill_ids": context["bill_ids"],
+    }
 
 @app.get("/api/me")
 def get_current_user(request: Request):
