@@ -42,12 +42,14 @@ class RevioWebhookParsingTests(unittest.TestCase):
         result = automation_event_reference_details(
             '{"_bullfrog":{"bill_items_loaded":true,'
             '"payment_reference":"ACH-20261019-000123456789",'
+            '"customer_name":"Kettler Law Firm, PC",'
             '"bill_ids":["79311","79312"],'
             '"applications":[{"bill_id":"79311","amount":1089.50}],'
             '"bill_details":[{"bill_id":"79311","products":[]}]}}',
             None,
         )
         self.assertEqual(result["reference_number"], "ACH-20261019-000123456789")
+        self.assertEqual(result["customer_name"], "Kettler Law Firm, PC")
         self.assertEqual(result["bill_ids"], ["79311", "79312"])
         self.assertTrue(result["details_loaded"])
         self.assertEqual(result["applications"][0]["amount"], 1089.50)
