@@ -33,7 +33,7 @@ STAGES = ["Intake", "Technical Review", "Ready to Schedule", "Implementation", "
           "Customer Acceptance", "Waiting on Customer", "On Hold", "Complete"]
 RISKS = ["Green", "Yellow", "Red"]
 PRIORITIES = ["Normal", "High", "Critical"]
-PROJECT_TYPES = ["Webex Calling", "Webex Contact Center", "Meraki", "Network", "Other"]
+PROJECT_TYPES = ["Webex Calling", "Webex Calling + E-Fax", "Webex Contact Center", "Meraki", "Network", "Other"]
 ENGINEERS = ["Gabriel", "Zach", "Michael"]
 SALES_OWNERS = ["Jack", "Matt"]
 CUSTOMER_SUCCESS_MANAGERS = ["Chad", "Ryan"]
@@ -78,6 +78,13 @@ TEMPLATES = {
         "LOA Document", "Customer CNAM Obtained", "Port Submitted", "Hardware Payment Check", "Hardware Ordered", "FOC Received", "Port Complete",
         "Hardware Delivered", "Devices Registered", "Users Added", "Go Live Follow Up", "Go Live", "Closeout",
     ],
+    "Webex Calling + E-Fax": [
+        "Signed Proposal", "Internal Handoff", "Kickoff Call", "Call Flow", "User Spreadsheet",
+        "LOA Document", "Customer CNAM Obtained", "Port Submitted", "Hardware Payment Check", "Hardware Ordered", "FOC Received", "Port Complete",
+        "Hardware Delivered", "Devices Registered", "Users Added", "E-Fax Requirements Confirmed",
+        "E-Fax Number Inventory Complete", "E-Fax Port Submitted", "E-Fax Provisioned",
+        "E-Fax Testing Complete", "E-Fax Training Complete", "Go Live Follow Up", "Go Live", "Closeout",
+    ],
     "Webex Contact Center": [
         "Signed Proposal", "Internal Handoff", "Kickoff Call", "Call Flow", "User Spreadsheet",
         "Users Added", "Agent Setup", "Integrations", "Flow Build", "Testing", "Supervisor Training",
@@ -99,6 +106,14 @@ PHASE_TEMPLATES = {
         {"name": "Design & Discovery", "owner": "engineer", "milestones": ["Call Flow", "User Spreadsheet", "LOA Document"]},
         {"name": "Hardware & Provisioning", "owner": "engineer", "milestones": ["Hardware Payment Check", "Hardware Ordered", "Hardware Delivered", "Devices Registered", "Users Added"]},
         {"name": "Number Porting", "owner": "engineer", "milestones": ["Customer CNAM Obtained", "Port Submitted", "FOC Received", "Port Complete"]},
+        {"name": "Go Live & Closeout", "owner": "csm", "milestones": ["Go Live Follow Up", "Go Live", "Closeout"]},
+    ],
+    "Webex Calling + E-Fax": [
+        {"name": "Planning & Handoff", "owner": "csm", "milestones": ["Signed Proposal", "Internal Handoff", "Kickoff Call"]},
+        {"name": "Design & Discovery", "owner": "engineer", "milestones": ["Call Flow", "User Spreadsheet", "LOA Document"]},
+        {"name": "Hardware & Provisioning", "owner": "engineer", "milestones": ["Hardware Payment Check", "Hardware Ordered", "Hardware Delivered", "Devices Registered", "Users Added"]},
+        {"name": "Number Porting", "owner": "engineer", "milestones": ["Customer CNAM Obtained", "Port Submitted", "FOC Received", "Port Complete"]},
+        {"name": "E-Fax", "owner": "engineer", "milestones": ["E-Fax Requirements Confirmed", "E-Fax Number Inventory Complete", "E-Fax Port Submitted", "E-Fax Provisioned", "E-Fax Testing Complete", "E-Fax Training Complete"]},
         {"name": "Go Live & Closeout", "owner": "csm", "milestones": ["Go Live Follow Up", "Go Live", "Closeout"]},
     ],
     "Webex Contact Center": [
@@ -138,6 +153,23 @@ WORK_ITEM_TEMPLATES = {
         {"phase": "Hardware & Provisioning", "name": "Order and Track Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order approved hardware after payment clearance and record shipment and tracking information."},
         {"phase": "Hardware & Provisioning", "name": "Configure Users and Devices", "item_type": "Ticket", "owner": "engineer", "hours": 4.0, "description": "Provision users, workspaces, licenses, calling features, and device assignments."},
         {"phase": "Number Porting", "name": "Submit and Manage Number Port", "item_type": "Ticket", "owner": "engineer", "hours": 2.0, "description": "Submit number ports, manage rejects, record FOC, and validate port completion."},
+        {"phase": "Go Live & Closeout", "name": "Customer Training", "item_type": "Task", "owner": "engineer", "hours": 1.0, "description": "Provide administrator and end-user training before go-live."},
+        {"phase": "Go Live & Closeout", "name": "Go-Live Appointment", "item_type": "Task", "owner": "engineer", "hours": 2.0, "description": "Complete the scheduled cutover, testing, and customer validation."},
+        {"phase": "Go Live & Closeout", "name": "Post-Go-Live Review", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review service after go-live and capture outstanding items."},
+        {"phase": "Go Live & Closeout", "name": "Documentation and Closeout", "item_type": "Ticket", "owner": "csm", "hours": 1.0, "description": "Complete documentation, acceptance, handoff, and project closeout."},
+    ],
+    "Webex Calling + E-Fax": [
+        {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Review signed scope, ownership, dependencies, and target dates with the Bullfrog delivery team."},
+        {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Hold the customer kickoff and confirm contacts, scope, schedule, and required inputs."},
+        {"phase": "Design & Discovery", "name": "Calling Design and Call Flow", "item_type": "Ticket", "owner": "engineer", "hours": 3.0, "description": "Document dial plan, calling features, auto attendants, queues, hours, caller ID, and emergency calling requirements."},
+        {"phase": "Design & Discovery", "name": "Collect User and Porting Documents", "item_type": "Ticket", "owner": "csm", "hours": 1.5, "description": "Collect and validate the user spreadsheet, number inventory, LOA, CSR, and customer approvals."},
+        {"phase": "Hardware & Provisioning", "name": "Order and Track Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order approved hardware after payment clearance and record shipment and tracking information."},
+        {"phase": "Hardware & Provisioning", "name": "Configure Users and Devices", "item_type": "Ticket", "owner": "engineer", "hours": 4.0, "description": "Provision users, workspaces, licenses, calling features, and device assignments."},
+        {"phase": "Number Porting", "name": "Submit and Manage Number Port", "item_type": "Ticket", "owner": "engineer", "hours": 2.0, "description": "Submit number ports, manage rejects, record FOC, and validate port completion."},
+        {"phase": "E-Fax", "name": "E-Fax Discovery and Design", "item_type": "Ticket", "owner": "engineer", "hours": 1.5, "description": "Confirm fax numbers, users, inbound delivery destinations, outbound permissions, retention, and porting requirements."},
+        {"phase": "E-Fax", "name": "Configure E-Fax Users and Routing", "item_type": "Ticket", "owner": "engineer", "hours": 2.0, "description": "Provision E-Fax users, assign fax numbers, configure inbound routing, and validate outbound sender settings."},
+        {"phase": "E-Fax", "name": "Submit and Manage E-Fax Number Port", "item_type": "Ticket", "owner": "engineer", "hours": 1.5, "description": "Submit E-Fax number ports, manage rejects and FOC, and confirm number activation."},
+        {"phase": "E-Fax", "name": "E-Fax Testing and Customer Training", "item_type": "Task", "owner": "engineer", "hours": 1.0, "description": "Test inbound and outbound faxing with the customer and provide user training."},
         {"phase": "Go Live & Closeout", "name": "Customer Training", "item_type": "Task", "owner": "engineer", "hours": 1.0, "description": "Provide administrator and end-user training before go-live."},
         {"phase": "Go Live & Closeout", "name": "Go-Live Appointment", "item_type": "Task", "owner": "engineer", "hours": 2.0, "description": "Complete the scheduled cutover, testing, and customer validation."},
         {"phase": "Go Live & Closeout", "name": "Post-Go-Live Review", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Review service after go-live and capture outstanding items."},
@@ -258,7 +290,7 @@ def project_work_owner_role(phase_name: str, item_name: str = "") -> str:
         return "sales"
     engineer_phase = any(
         keyword in normalized_phase
-        for keyword in ("design", "discover", "number port")
+        for keyword in ("design", "discover", "number port", "e-fax")
     )
     engineer_item = "configure users and devices" in normalized_item
     return "engineer" if engineer_phase or engineer_item else "csm"
@@ -354,6 +386,8 @@ def ensure_project_phase_names():
 WORKFLOW_MILESTONES = {
     "Webex Calling": ["Signed Proposal", "Kickoff Call", "LOA Document", "Customer CNAM Obtained", "FOC Received", "Port Complete",
                       "Hardware Payment Check", "Hardware Ordered", "Hardware Delivered", "User Spreadsheet"],
+    "Webex Calling + E-Fax": ["Signed Proposal", "Kickoff Call", "LOA Document", "Customer CNAM Obtained", "FOC Received", "Port Complete",
+                             "Hardware Payment Check", "Hardware Ordered", "Hardware Delivered", "User Spreadsheet"],
     "Webex Contact Center": ["Signed Proposal", "Kickoff Call", "User Spreadsheet"],
     "Meraki": ["Signed Proposal", "Kickoff Call", "Hardware Payment Check", "Hardware Ordered", "Hardware Delivered"],
     "Network": ["Signed Proposal", "Kickoff Call", "Hardware Payment Check", "Hardware Ordered", "Hardware Delivered"],
