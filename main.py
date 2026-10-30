@@ -686,6 +686,82 @@ def order_monitor_baseline_key(mailbox: str) -> str:
     return f"order_folder_baseline:{digest}"
 
 
+def order_sales_owner(mailbox: str) -> str:
+    owners = {
+        "jack@bullfrog.net": "Jack Harris",
+        "matthew@bullfrog.net": "Matthew Petrusha",
+    }
+    normalized = mailbox.strip().lower()
+    return owners.get(normalized, normalized.split("@", 1)[0].replace(".", " ").title())
+
+
+def readable_file_size(value) -> str:
+    try:
+        size = max(0, int(value or 0))
+    except (TypeError, ValueError):
+        size = 0
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def signed_proposal_notification_body(
+    notification: OrderFolderNotification, attachments: list[dict]
+) -> str:
+    if notification.received_at:
+        timezone_name = os.getenv("ORDER_NOTIFICATION_TIMEZONE", "America/New_York")
+        received_at = notification.received_at.replace(tzinfo=timezone.utc).astimezone(
+            ZoneInfo(timezone_name)
+        )
+        received = received_at.strftime("%B %d, %Y at %I:%M %p %Z")
+    else:
+        received = "Unknown"
+    sender = html.escape(notification.source_sender_name or "Unknown sender")
+    if notification.source_sender_email:
+        sender = f"{sender} &lt;{html.escape(notification.source_sender_email)}&gt;"
+    attachment_items = [
+        f"<li><strong>{html.escape(str(item.get('name') or 'Unnamed attachment'))}</strong> "
+        f"({html.escape(str(item.get('contentType') or 'unknown type'))}, "
+        f"{readable_file_size(item.get('size'))})</li>"
+        for item in attachments
+        if not item.get("isInline")
+    ]
+    attachments_html = (
+        f"<ul>{''.join(attachment_items)}</ul>"
+        if attachment_items
+        else ("Attachment(s) were reported, but their details were unavailable."
+              if notification.has_attachments else "None reported")
+    )
+    source_details = (notification.source_body or "No completion-email details were available.").strip()
+    source_details = source_details[:12000]
+    return (
+        "<h2 style=\"margin-bottom:8px\">Signed Proposal Received</h2>"
+        f"<p><strong>{html.escape(notification.customer_name)}</strong> has completed a proposal.</p>"
+        "<table style=\"border-collapse:collapse;max-width:760px\">"
+        f"<tr><td style=\"padding:5px 14px 5px 0\"><strong>Proposal / customer</strong></td>"
+        f"<td>{html.escape(notification.customer_name)}</td></tr>"
+        f"<tr><td style=\"padding:5px 14px 5px 0\"><strong>Sales owner</strong></td>"
+        f"<td>{html.escape(order_sales_owner(notification.mailbox))}</td></tr>"
+        f"<tr><td style=\"padding:5px 14px 5px 0\"><strong>Signed email received</strong></td>"
+        f"<td>{html.escape(received)}</td></tr>"
+        f"<tr><td style=\"padding:5px 14px 5px 0\"><strong>Original sender</strong></td>"
+        f"<td>{sender}</td></tr>"
+        f"<tr><td style=\"padding:5px 14px 5px 0\"><strong>Original subject</strong></td>"
+        f"<td>{html.escape(notification.subject)}</td></tr>"
+        f"<tr><td style=\"padding:5px 14px 5px 0\"><strong>Source mailbox</strong></td>"
+        f"<td>{html.escape(notification.mailbox)}</td></tr>"
+        "</table>"
+        "<h3 style=\"margin-bottom:6px\">Attachments</h3>"
+        f"{attachments_html}"
+        "<h3 style=\"margin-bottom:6px\">Completion email details</h3>"
+        f"<div style=\"white-space:pre-wrap;border-left:3px solid #8bc53f;padding:10px 14px;\">"
+        f"{html.escape(source_details)}</div>"
+        "<p><strong>Next step:</strong> Review the signed proposal and start Rev PSA project intake.</p>"
+    )
+
+
 async def graph_order_folder_messages(
     client: httpx.AsyncClient, token: str, mailbox: str, limit: int = 50
 ) -> list[dict]:
@@ -725,15 +801,30 @@ async def graph_order_folder_messages(
         )
     response = await client.get(
         f"{GRAPH_API}/users/{quote(mailbox, safe='')}/mailFolders/{quote(str(folder['id']), safe='')}/messages",
-        headers=headers,
+        headers={**headers, "Prefer": 'outlook.body-content-type="text"'},
         params={
-            "$select": "id,internetMessageId,subject,receivedDateTime",
+            "$select": "id,internetMessageId,subject,receivedDateTime,from,body,bodyPreview,hasAttachments",
             "$orderby": "receivedDateTime desc",
             "$top": str(max(1, min(limit, 100))),
         },
     )
     response.raise_for_status()
     return [item for item in response.json().get("value", []) if isinstance(item, dict)]
+
+
+async def graph_order_message_attachments(mailbox: str, message_id: str) -> list[dict]:
+    if not message_id:
+        return []
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        token = await order_graph_access_token(client)
+        response = await client.get(
+            f"{GRAPH_API}/users/{quote(mailbox, safe='')}/messages/"
+            f"{quote(message_id, safe='')}/attachments",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"$select": "id,name,contentType,size,isInline", "$top": "50"},
+        )
+        response.raise_for_status()
+        return [item for item in response.json().get("value", []) if isinstance(item, dict)]
 
 
 async def sync_order_folder_notifications() -> dict:
@@ -769,12 +860,18 @@ async def sync_order_folder_notifications() -> dict:
                 ))
                 if existing:
                     continue
+                source_sender = ((message.get("from") or {}).get("emailAddress") or {})
+                source_body = (message.get("body") or {}).get("content") or message.get("bodyPreview")
                 db.add(OrderFolderNotification(
                     mailbox=mailbox,
                     message_id=message_id,
                     internet_message_id=str(message.get("internetMessageId") or "") or None,
                     customer_name=customer,
                     subject=str(message.get("subject") or "")[:500],
+                    source_sender_name=str(source_sender.get("name") or "")[:200] or None,
+                    source_sender_email=str(source_sender.get("address") or "")[:320] or None,
+                    source_body=str(source_body or "")[:12000] or None,
+                    has_attachments=bool(message.get("hasAttachments")),
                     received_at=graph_received_datetime(message.get("receivedDateTime")),
                     status="Baselined" if first_run else "Pending",
                 ))
@@ -797,19 +894,20 @@ async def sync_order_folder_notifications() -> dict:
         if not recipient or not sender:
             raise RuntimeError("The signed-proposal notification sender or recipient is not configured")
         for notification in pending:
-            if notification.received_at:
-                timezone_name = os.getenv("ORDER_NOTIFICATION_TIMEZONE", "America/New_York")
-                received_at = notification.received_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(timezone_name))
-                received = received_at.strftime("%B %d, %Y at %I:%M %p %Z")
-            else:
-                received = "an unknown time"
-            body = (
-                f"<p>A proposal has been signed by <strong>{html.escape(notification.customer_name)}</strong>.</p>"
-                f"<p>The completion email was received in <strong>{html.escape(notification.mailbox)}</strong>'s "
-                f"Orders folder on {html.escape(received)}.</p>"
-                f"<p>Rev PSA project intake can now be started for this customer.</p>"
-            )
             try:
+                attachments = []
+                if notification.has_attachments:
+                    try:
+                        attachments = await graph_order_message_attachments(
+                            notification.mailbox, notification.message_id
+                        )
+                    except (httpx.HTTPError, RuntimeError) as exc:
+                        logger.warning(
+                            "Unable to load signed-proposal attachment metadata for %s: %s",
+                            notification.id,
+                            exc,
+                        )
+                body = signed_proposal_notification_body(notification, attachments)
                 await graph_send_project_notification(
                     recipient,
                     f"Proposal Signed — {notification.customer_name}",
@@ -903,6 +1001,21 @@ def ensure_database_schema():
         if column_name not in intake_columns:
             with engine.begin() as connection:
                 connection.execute(text(f"ALTER TABLE intake_emails ADD COLUMN {column_name} {column_type}"))
+    order_notification_columns = {
+        column["name"] for column in inspect(engine).get_columns("order_folder_notifications")
+    }
+    order_notification_additions = {
+        "source_sender_name": "VARCHAR(200)",
+        "source_sender_email": "VARCHAR(320)",
+        "source_body": "TEXT",
+        "has_attachments": "BOOLEAN DEFAULT FALSE",
+    }
+    for column_name, column_type in order_notification_additions.items():
+        if column_name not in order_notification_columns:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    f"ALTER TABLE order_folder_notifications ADD COLUMN {column_name} {column_type}"
+                ))
 
 def revio_configured() -> bool:
     return bool(os.getenv("REVIO_API_KEY", "").strip())
