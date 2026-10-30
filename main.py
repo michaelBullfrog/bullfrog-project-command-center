@@ -796,7 +796,7 @@ def normalize_revio_quote(item: dict) -> dict | None:
     if quote_id in (None, ""):
         return None
     status_name = revio_value(
-        item, "statusName", "status_name", "approvalStatus", "approval_status",
+        item, "statusName", "status_name", "status", "approvalStatus", "approval_status",
         "quoteStatus", "quote_status",
     )
     status_container = item.get("status")
@@ -870,6 +870,73 @@ def normalize_revio_quote(item: dict) -> dict | None:
     }
 
 
+def revio_quote_page_has_more(payload: dict, page: int, page_size: int, record_count: int) -> bool:
+    containers = [payload]
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if isinstance(data, dict):
+        containers.append(data)
+    for container in containers:
+        has_more = revio_value(container, "hasMore", "has_more")
+        if has_more is not None:
+            return has_more is True or str(has_more).strip().lower() == "true"
+        total = revio_value(container, "totalCount", "total_count", "recordCount", "record_count", "totalRecords")
+        if total not in (None, ""):
+            try:
+                return page * page_size < int(total)
+            except (TypeError, ValueError):
+                pass
+    return record_count >= page_size
+
+
+def revio_quote_observed_at(quote_record: dict) -> datetime | None:
+    if quote_record.get("approved_at"):
+        return quote_record["approved_at"]
+    raw = quote_record.get("raw") or {}
+    value = revio_value(
+        raw, "modifiedDate", "modified_date", "updatedAt", "updated_at",
+        "createdDate", "created_date", "createdAt", "created_at",
+    )
+    return graph_received_datetime(str(value)) if value else None
+
+
+def revio_quote_baseline_at(baseline: IntegrationSyncState | None) -> datetime | None:
+    if not baseline or not baseline.value:
+        return None
+    try:
+        value = json.loads(baseline.value).get("created_at")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return graph_received_datetime(str(value)) if value else None
+
+
+async def fetch_revio_quotes() -> tuple[list[dict], int]:
+    path = os.getenv("REVIO_QUOTE_PATH", "/billing/api/v1/quotes")
+    page_size = max(10, min(int(os.getenv("REVIO_QUOTE_PAGE_SIZE", "100")), 500))
+    max_pages = max(1, min(int(os.getenv("REVIO_QUOTE_MAX_PAGES", "20")), 100))
+    records_by_id: dict[str, dict] = {}
+    pages_checked = 0
+    for page in range(1, max_pages + 1):
+        payload = await revio_psa_api_request(
+            "GET", path, params={"page": page, "pageSize": page_size}
+        )
+        page_records = revio_records(payload)
+        pages_checked += 1
+        new_records = 0
+        for item in page_records:
+            quote_id = revio_quote_nested_value(item, "quoteId", "quote_id", "id")
+            if quote_id in (None, ""):
+                continue
+            key = str(quote_id)
+            if key not in records_by_id:
+                new_records += 1
+            records_by_id[key] = item
+        if not page_records or new_records == 0:
+            break
+        if not revio_quote_page_has_more(payload, page, page_size, len(page_records)):
+            break
+    return list(records_by_id.values()), pages_checked
+
+
 async def enrich_revio_quote(quote_record: dict) -> dict:
     result = dict(quote_record)
     if not result.get("customer_id") or not result.get("customer_name") or not result.get("quote_name"):
@@ -920,13 +987,22 @@ def revio_quote_intake_body(quote_record: dict) -> str:
     return "\n".join(lines)
 
 
-async def sync_revio_quote_approvals() -> dict:
+async def sync_revio_quote_approvals(force_quote_id: str | None = None) -> dict:
     if not revio_configured():
-        return {"checked": 0, "imported": 0, "baselined": 0, "configured": False}
-    path = os.getenv("REVIO_QUOTE_PATH", "/billing/api/v1/quotes")
-    payload = await revio_psa_api_request("GET", path)
+        return {"checked": 0, "approved": 0, "imported": 0, "baselined": 0, "pages": 0, "configured": False}
+    force_quote_id = str(force_quote_id or "").strip() or None
+    if force_quote_id:
+        path = os.getenv("REVIO_QUOTE_PATH", "/billing/api/v1/quotes").rstrip("/")
+        payload = await revio_psa_api_request(
+            "GET", f"{path}/{quote(force_quote_id, safe='')}"
+        )
+        detail = payload.get("data", payload) if isinstance(payload, dict) else payload
+        raw_quotes = [detail] if isinstance(detail, dict) else []
+        pages_checked = 1
+    else:
+        raw_quotes, pages_checked = await fetch_revio_quotes()
     quote_records = [
-        normalized for normalized in (normalize_revio_quote(item) for item in revio_records(payload))
+        normalized for normalized in (normalize_revio_quote(item) for item in raw_quotes)
         if normalized is not None
     ]
     db = SessionLocal()
@@ -935,16 +1011,28 @@ async def sync_revio_quote_approvals() -> dict:
     try:
         baseline = db.get(IntegrationSyncState, REVIO_QUOTE_BASELINE_KEY)
         first_run = baseline is None
+        baseline_at = revio_quote_baseline_at(baseline)
         now = datetime.utcnow()
         for quote_record in quote_records:
             quote_id = quote_record["quote_id"]
             state = db.get(QuoteApprovalState, quote_id)
             was_approved = bool(state and state.is_approved)
+            discovered_after_baseline = (
+                state is not None
+                or baseline_at is None
+                or (
+                    revio_quote_observed_at(quote_record) is not None
+                    and revio_quote_observed_at(quote_record) >= baseline_at
+                )
+            )
             should_import = (
                 not first_run
                 and quote_record["is_approved"]
-                and not was_approved
                 and not (state and state.imported)
+                and (
+                    quote_id == force_quote_id
+                    or (not was_approved and discovered_after_baseline)
+                )
             )
             if should_import:
                 quote_record = await enrich_revio_quote(quote_record)
@@ -996,8 +1084,10 @@ async def sync_revio_quote_approvals() -> dict:
             ))
         db.commit()
         return {
-            "checked": len(quote_records), "imported": imported,
-            "baselined": baselined, "configured": True,
+            "checked": len(quote_records),
+            "approved": sum(1 for item in quote_records if item["is_approved"]),
+            "imported": imported, "baselined": baselined,
+            "pages": pages_checked, "configured": True,
         }
     finally:
         db.close()
@@ -4139,6 +4229,28 @@ async def sync_graph_mailbox():
         "quotes_baselined": int(quote_summary.get("baselined", 0)),
         "warnings": errors,
     }
+
+
+@app.post("/api/revio/quotes/sync-approved")
+async def sync_approved_revio_quotes(request: Request):
+    try:
+        payload = await request.json()
+    except ValueError:
+        payload = {}
+    quote_id = str(payload.get("quote_id") or "").strip() if isinstance(payload, dict) else ""
+    try:
+        result = await sync_revio_quote_approvals(quote_id or None)
+    except httpx.HTTPStatusError as exc:
+        detail = revio_http_error_detail(exc, "Rev PSA rejected the approved quote check")
+        raise HTTPException(
+            502,
+            f"Rev PSA approved quote check failed with status {exc.response.status_code}: {detail}",
+        )
+    except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+        raise HTTPException(502, f"Rev PSA approved quote check failed: {exc}")
+    if not result.get("configured"):
+        raise HTTPException(503, "Rev PSA is not configured")
+    return {"status": "ok", **result}
 
 @app.post("/api/intake/email", response_model=IntakeEmailOut, status_code=status.HTTP_201_CREATED)
 def receive_intake_email(
