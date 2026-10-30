@@ -231,6 +231,26 @@ class QuoteApprovalState(Base):
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
+
+class OrderFolderNotification(Base):
+    __tablename__ = "order_folder_notifications"
+    __table_args__ = (
+        UniqueConstraint("mailbox", "message_id", name="uq_order_folder_mailbox_message"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    mailbox: Mapped[str] = mapped_column(String(320), index=True)
+    message_id: Mapped[str] = mapped_column(String(500))
+    internet_message_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    customer_name: Mapped[str] = mapped_column(String(255), index=True)
+    subject: Mapped[str] = mapped_column(String(500))
+    received_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(40), default="Pending", index=True)
+    email_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
 class PsaTicketWorkflow(Base):
     __tablename__ = "psa_ticket_workflows"
     __table_args__ = (UniqueConstraint("project_id", "workflow_key", name="uq_psa_ticket_workflow_step"),)
