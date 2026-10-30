@@ -39,6 +39,15 @@ class QuoteApprovalIntakeTests(unittest.TestCase):
 
         self.assertTrue(result["is_approved"])
 
+    def test_scalar_status_is_supported(self):
+        result = main.normalize_revio_quote({
+            "quoteId": 12,
+            "status": "Approved",
+        })
+
+        self.assertTrue(result["is_approved"])
+        self.assertEqual(result["status_name"], "Approved")
+
     def test_intake_body_contains_review_context(self):
         body = main.revio_quote_intake_body({
             "quote_id": "81234",
@@ -109,6 +118,85 @@ class QuoteApprovalSyncTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(intake.sales_owner, "Jack")
             finally:
                 db.close()
+        finally:
+            main.revio_psa_api_request = original_request
+            main.revio_configured = original_configured
+
+    async def test_fetches_all_reported_quote_pages(self):
+        async def fake_request(method, path, **kwargs):
+            page = kwargs["params"]["page"]
+            if page == 1:
+                items = [{"quoteId": value, "status": "Open"} for value in range(1, 101)]
+            else:
+                items = [{"quoteId": 101, "status": "Approved"}]
+            return {"data": {"items": items, "totalCount": 101}}
+
+        original_request = main.revio_psa_api_request
+        main.revio_psa_api_request = fake_request
+        try:
+            records, pages = await main.fetch_revio_quotes()
+            self.assertEqual(len(records), 101)
+            self.assertEqual(pages, 2)
+        finally:
+            main.revio_psa_api_request = original_request
+
+    async def test_does_not_import_old_approved_quotes_discovered_by_pagination(self):
+        async def fake_request(method, path, **kwargs):
+            return {"data": [{
+                "quoteId": 42,
+                "status": "Approved",
+                "createdDate": "2020-01-01T12:00:00Z",
+            }]}
+
+        db = main.SessionLocal()
+        try:
+            db.add(main.IntegrationSyncState(
+                key=main.REVIO_QUOTE_BASELINE_KEY,
+                value='{"created_at":"2026-10-30T12:00:00"}',
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        original_request = main.revio_psa_api_request
+        original_configured = main.revio_configured
+        main.revio_psa_api_request = fake_request
+        main.revio_configured = lambda: True
+        try:
+            result = await main.sync_revio_quote_approvals()
+            self.assertEqual(result["approved"], 1)
+            self.assertEqual(result["imported"], 0)
+        finally:
+            main.revio_psa_api_request = original_request
+            main.revio_configured = original_configured
+
+    async def test_exact_quote_check_can_import_an_old_approval(self):
+        async def fake_request(method, path, **kwargs):
+            return {"data": {
+                "quoteId": 43,
+                "status": "Approved",
+                "createdDate": "2020-01-01T12:00:00Z",
+                "customerId": 1996,
+                "customerName": "Test Customer",
+            }}
+
+        db = main.SessionLocal()
+        try:
+            db.add(main.IntegrationSyncState(
+                key=main.REVIO_QUOTE_BASELINE_KEY,
+                value='{"created_at":"2026-10-30T12:00:00"}',
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        original_request = main.revio_psa_api_request
+        original_configured = main.revio_configured
+        main.revio_psa_api_request = fake_request
+        main.revio_configured = lambda: True
+        try:
+            result = await main.sync_revio_quote_approvals("43")
+            self.assertEqual(result["imported"], 1)
         finally:
             main.revio_psa_api_request = original_request
             main.revio_configured = original_configured
