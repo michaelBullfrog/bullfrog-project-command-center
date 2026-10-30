@@ -107,6 +107,15 @@ To enable immediate payment-event processing:
 
 Webhook events are saved before processing and deduplicated by Rev.io event ID. Positive payment events immediately recheck projects linked to the affected Bill. A reversal, void, or bounced payment after the hardware-order email was sent changes the workflow to **Needs Review** but never sends a duplicate order email.
 
+## Rev PSA approved quote intake
+
+The app checks Rev PSA for quote approvals every five minutes and adds newly approved quotes to **Project Intake**. The first successful check records the current quote statuses as a baseline, so historical approvals do not flood the intake queue. Later transitions to Approved are deduplicated by Rev PSA Quote ID and include the customer, Customer ID, quote description, sales owner, approval time, and available total. Clicking **Sync Inbox** also runs the quote check immediately.
+
+Optional settings:
+
+- `REVIO_QUOTE_PATH` defaults to `/billing/api/v1/quotes`.
+- `REVIO_QUOTE_SYNC_SECONDS` defaults to `300` and cannot run more frequently than once per minute.
+
 These settings are separate from the Rev.io PSA API. Store the authorization value only as a secret environment variable; never commit it to GitHub.
 
 The Microsoft Entra application used by `MS_INTAKE_MAILBOX` must also have the Microsoft Graph **Mail.Send application permission** with admin consent. The existing Exchange application access policy should keep send-as access limited to the approved mailbox.

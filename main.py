@@ -22,7 +22,7 @@ from sqlalchemy import inspect, or_, select, text, update
 from sqlalchemy.orm import Session, selectinload
 
 from database import Base, SessionLocal, engine, get_db
-from models import AutomationEvent, CustomProjectTemplate, CustomerContact, HardwareOrderWorkflow, IntakeEmail, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote, ProjectWorkItem, PsaTicketWorkflow
+from models import AutomationEvent, CustomProjectTemplate, CustomerContact, HardwareOrderWorkflow, IntegrationSyncState, IntakeEmail, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote, ProjectWorkItem, PsaTicketWorkflow, QuoteApprovalState
 from schemas import (
     ContactCreate, ContactOut, ContactUpdate, IntakeConvert, IntakeEmailCreate, IntakeEmailOut,
     MilestoneCreate, MilestoneOut, MilestoneUpdate, NoteOut, ProjectCreate, ProjectOut, ProjectUpdate,
@@ -150,7 +150,8 @@ WORK_ITEM_TEMPLATES = {
         {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Hold the customer kickoff and confirm contacts, scope, schedule, and required inputs."},
         {"phase": "Design & Discovery", "name": "Calling Design and Call Flow", "item_type": "Ticket", "owner": "engineer", "hours": 3.0, "description": "Document dial plan, calling features, auto attendants, queues, hours, caller ID, and emergency calling requirements."},
         {"phase": "Design & Discovery", "name": "Collect User and Porting Documents", "item_type": "Ticket", "owner": "csm", "hours": 1.5, "description": "Collect and validate the user spreadsheet, number inventory, LOA, CSR, and customer approvals."},
-        {"phase": "Hardware & Provisioning", "name": "Order and Track Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order approved hardware after payment clearance and record shipment and tracking information."},
+        {"phase": "Hardware & Provisioning", "name": "Order Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order the approved customer hardware after payment clearance and record the order confirmation."},
+        {"phase": "Hardware & Provisioning", "name": "Track Hardware Shipment", "item_type": "Ticket", "owner": "csm", "hours": 0.5, "description": "Monitor the hardware shipment, record the tracking information, and keep the customer updated through delivery."},
         {"phase": "Hardware & Provisioning", "name": "Configure Users and Devices", "item_type": "Ticket", "owner": "engineer", "hours": 4.0, "description": "Provision users, workspaces, licenses, calling features, and device assignments."},
         {"phase": "Number Porting", "name": "Submit and Manage Number Port", "item_type": "Ticket", "owner": "engineer", "hours": 2.0, "description": "Submit number ports, manage rejects, record FOC, and validate port completion."},
         {"phase": "Go Live & Closeout", "name": "Customer Training", "item_type": "Task", "owner": "engineer", "hours": 1.0, "description": "Provide administrator and end-user training before go-live."},
@@ -163,7 +164,8 @@ WORK_ITEM_TEMPLATES = {
         {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Hold the customer kickoff and confirm contacts, scope, schedule, and required inputs."},
         {"phase": "Design & Discovery", "name": "Calling Design and Call Flow", "item_type": "Ticket", "owner": "engineer", "hours": 3.0, "description": "Document dial plan, calling features, auto attendants, queues, hours, caller ID, and emergency calling requirements."},
         {"phase": "Design & Discovery", "name": "Collect User and Porting Documents", "item_type": "Ticket", "owner": "csm", "hours": 1.5, "description": "Collect and validate the user spreadsheet, number inventory, LOA, CSR, and customer approvals."},
-        {"phase": "Hardware & Provisioning", "name": "Order and Track Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order approved hardware after payment clearance and record shipment and tracking information."},
+        {"phase": "Hardware & Provisioning", "name": "Order Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order the approved customer hardware after payment clearance and record the order confirmation."},
+        {"phase": "Hardware & Provisioning", "name": "Track Hardware Shipment", "item_type": "Ticket", "owner": "csm", "hours": 0.5, "description": "Monitor the hardware shipment, record the tracking information, and keep the customer updated through delivery."},
         {"phase": "Hardware & Provisioning", "name": "Configure Users and Devices", "item_type": "Ticket", "owner": "engineer", "hours": 4.0, "description": "Provision users, workspaces, licenses, calling features, and device assignments."},
         {"phase": "Number Porting", "name": "Submit and Manage Number Port", "item_type": "Ticket", "owner": "engineer", "hours": 2.0, "description": "Submit number ports, manage rejects, record FOC, and validate port completion."},
         {"phase": "E-Fax", "name": "E-Fax Discovery and Design", "item_type": "Ticket", "owner": "engineer", "hours": 1.5, "description": "Confirm fax numbers, users, inbound delivery destinations, outbound permissions, retention, and porting requirements."},
@@ -189,7 +191,8 @@ WORK_ITEM_TEMPLATES = {
     "Meraki": [
         {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Review scope, hardware, dependencies, and installation targets."},
         {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Confirm contacts, topology, schedule, access, and required inputs."},
-        {"phase": "Hardware", "name": "Order and Track Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order approved hardware and record shipment and tracking details."},
+        {"phase": "Hardware", "name": "Order Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order the approved customer hardware after payment clearance and record the order confirmation."},
+        {"phase": "Hardware", "name": "Track Hardware Shipment", "item_type": "Ticket", "owner": "csm", "hours": 0.5, "description": "Monitor the hardware shipment, record the tracking information, and keep the customer updated through delivery."},
         {"phase": "Design & Configuration", "name": "Network Design and Configuration", "item_type": "Ticket", "owner": "engineer", "hours": 5.0, "description": "Complete topology, VLAN, addressing, firewall, VPN, switching, and wireless configuration."},
         {"phase": "Design & Configuration", "name": "Register and Stage Devices", "item_type": "Ticket", "owner": "engineer", "hours": 3.0, "description": "Claim, register, update, configure, and stage Meraki equipment."},
         {"phase": "Deployment", "name": "Installation Appointment", "item_type": "Task", "owner": "engineer", "hours": 4.0, "description": "Perform the scheduled onsite or remote deployment."},
@@ -200,7 +203,8 @@ WORK_ITEM_TEMPLATES = {
     "Network": [
         {"phase": "Planning & Handoff", "name": "Internal Handoff Meeting", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Review scope, hardware, dependencies, and installation targets."},
         {"phase": "Planning & Handoff", "name": "Customer Kickoff Call", "item_type": "Task", "owner": "csm", "hours": 1.0, "description": "Confirm contacts, topology, schedule, access, and required inputs."},
-        {"phase": "Hardware", "name": "Order and Track Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order approved hardware and record shipment and tracking details."},
+        {"phase": "Hardware", "name": "Order Hardware", "item_type": "Ticket", "owner": "sales", "hours": 1.0, "description": "Order the approved customer hardware after payment clearance and record the order confirmation."},
+        {"phase": "Hardware", "name": "Track Hardware Shipment", "item_type": "Ticket", "owner": "csm", "hours": 0.5, "description": "Monitor the hardware shipment, record the tracking information, and keep the customer updated through delivery."},
         {"phase": "Design & Configuration", "name": "Network Design and Configuration", "item_type": "Ticket", "owner": "engineer", "hours": 5.0, "description": "Complete network design, addressing, security, switching, wireless, and configuration work."},
         {"phase": "Deployment", "name": "Installation Appointment", "item_type": "Task", "owner": "engineer", "hours": 4.0, "description": "Perform the scheduled onsite or remote deployment."},
         {"phase": "Deployment", "name": "Validation and Documentation", "item_type": "Ticket", "owner": "engineer", "hours": 2.0, "description": "Validate the deployment, resolve issues, and complete documentation."},
@@ -664,6 +668,18 @@ def ensure_database_schema():
         if column_name not in milestone_columns:
             with engine.begin() as connection:
                 connection.execute(text(f"ALTER TABLE milestones ADD COLUMN {column_name} {column_type}"))
+    intake_columns = {column["name"] for column in inspect(engine).get_columns("intake_emails")}
+    intake_additions = {
+        "source_type": "VARCHAR(40)",
+        "customer_id": "VARCHAR(50)",
+        "customer_name": "VARCHAR(255)",
+        "quote_id": "VARCHAR(100)",
+        "sales_owner": "VARCHAR(200)",
+    }
+    for column_name, column_type in intake_additions.items():
+        if column_name not in intake_columns:
+            with engine.begin() as connection:
+                connection.execute(text(f"ALTER TABLE intake_emails ADD COLUMN {column_name} {column_type}"))
 
 def revio_configured() -> bool:
     return bool(os.getenv("REVIO_API_KEY", "").strip())
@@ -673,7 +689,7 @@ def revio_records(payload) -> list[dict]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
     if isinstance(data, dict):
-        for key in ("items", "customers", "records", "results", "milestones", "data"):
+        for key in ("items", "customers", "quotes", "records", "results", "milestones", "data"):
             items = data.get(key)
             if isinstance(items, list):
                 return [item for item in items if isinstance(item, dict)]
@@ -756,6 +772,249 @@ async def revio_psa_api_request(method: str, path: str, *, json_body: dict | Non
             return {}
         payload = response.json()
         return payload if isinstance(payload, dict) else {"data": payload}
+
+
+REVIO_QUOTE_BASELINE_KEY = "revio_psa_quote_approval_baseline"
+
+
+def revio_quote_nested_value(item: dict, *keys):
+    value = revio_value(item, *keys)
+    if value not in (None, "") and not isinstance(value, dict):
+        return value
+    for container_name in ("status", "customer", "assignee", "owner", "salesRep", "sales_rep"):
+        container = item.get(container_name)
+        if not isinstance(container, dict):
+            continue
+        value = revio_value(container, *keys)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def normalize_revio_quote(item: dict) -> dict | None:
+    quote_id = revio_quote_nested_value(item, "quoteId", "quote_id", "id")
+    if quote_id in (None, ""):
+        return None
+    status_name = revio_value(
+        item, "statusName", "status_name", "approvalStatus", "approval_status",
+        "quoteStatus", "quote_status",
+    )
+    status_container = item.get("status")
+    if isinstance(status_name, dict):
+        status_container = status_name
+        status_name = None
+    if not status_name and isinstance(status_container, dict):
+        status_name = revio_value(status_container, "name", "statusName", "status_name", "displayName")
+    approved_flag = revio_value(
+        item, "isApproved", "is_approved", "approved", "isAccepted", "is_accepted"
+    )
+    normalized_status = normalize_customer_name(str(status_name or ""))
+    approved_statuses = {
+        "approved", "accepted", "complete", "completed", "won", "converted",
+        "quoteapproved", "quoteaccepted", "quotecomplete", "quotecompleted",
+    }
+    is_approved = approved_flag is True or str(approved_flag).strip().lower() == "true"
+    if not is_approved:
+        is_approved = normalized_status in approved_statuses
+
+    approved_value = revio_quote_nested_value(
+        item,
+        "approvedAt", "approved_at", "approvedDate", "approved_date",
+        "acceptedAt", "accepted_at", "statusDate", "status_date",
+        "updatedAt", "updated_at", "modifiedDate", "modified_date",
+    )
+    approved_at = graph_received_datetime(str(approved_value)) if approved_value else None
+    customer_id = revio_quote_nested_value(item, "customerId", "customer_id", "accountId", "account_id")
+    customer_name = revio_value(
+        item, "customerName", "customer_name", "companyName", "company_name", "businessName"
+    )
+    customer_container = item.get("customer")
+    if not customer_id and isinstance(customer_container, dict):
+        customer_id = revio_value(customer_container, "customerId", "customer_id", "id", "accountId")
+    if not customer_name and isinstance(customer_container, dict):
+        customer_name = revio_value(
+            customer_container, "name", "customerName", "companyName", "businessName", "displayName"
+        )
+    quote_name = revio_quote_nested_value(
+        item, "quoteName", "quote_name", "description", "title", "subject"
+    )
+    sales_owner = revio_value(
+        item, "salesOwnerName", "sales_owner_name", "salesRepName", "sales_rep_name",
+        "assigneeName", "assignee_name", "ownerName", "owner_name",
+    )
+    if not sales_owner:
+        for owner_key in ("salesRep", "sales_rep", "assignee", "owner"):
+            owner_container = item.get(owner_key)
+            if isinstance(owner_container, dict):
+                sales_owner = revio_value(owner_container, "name", "displayName", "fullName")
+                if sales_owner:
+                    break
+    if sales_owner:
+        normalized_owner = normalize_customer_name(str(sales_owner))
+        if "jack" in normalized_owner:
+            sales_owner = "Jack"
+        elif "matt" in normalized_owner:
+            sales_owner = "Matt"
+    amount = revio_quote_nested_value(item, "total", "totalAmount", "total_amount", "amount")
+    return {
+        "quote_id": str(quote_id),
+        "status_name": str(status_name or "Unknown"),
+        "is_approved": is_approved,
+        "approved_at": approved_at,
+        "customer_id": str(customer_id) if customer_id not in (None, "") else None,
+        "customer_name": str(customer_name).strip() if customer_name not in (None, "") else None,
+        "quote_name": str(quote_name).strip() if quote_name not in (None, "") else None,
+        "sales_owner": str(sales_owner).strip() if sales_owner not in (None, "") else None,
+        "amount": amount,
+        "raw": item,
+    }
+
+
+async def enrich_revio_quote(quote_record: dict) -> dict:
+    result = dict(quote_record)
+    if not result.get("customer_id") or not result.get("customer_name") or not result.get("quote_name"):
+        try:
+            path = os.getenv("REVIO_QUOTE_PATH", "/billing/api/v1/quotes").rstrip("/")
+            payload = await revio_psa_api_request(
+                "GET", f"{path}/{quote(result['quote_id'], safe='')}"
+            )
+            detail = payload.get("data", payload) if isinstance(payload, dict) else {}
+            if isinstance(detail, dict):
+                normalized = normalize_revio_quote(detail)
+                if normalized:
+                    for key in (
+                        "status_name", "approved_at", "customer_id", "customer_name",
+                        "quote_name", "sales_owner", "amount",
+                    ):
+                        if normalized.get(key) not in (None, "", "Unknown"):
+                            result[key] = normalized[key]
+                    result["raw"] = detail
+        except (httpx.HTTPError, RuntimeError, ValueError):
+            logger.exception("Unable to load details for approved Rev PSA quote %s", result["quote_id"])
+    if result.get("customer_id") and not result.get("customer_name"):
+        try:
+            customer = await revio_lookup_customer(str(result["customer_id"]))
+            if customer:
+                result["customer_name"] = customer["customer_name"]
+        except (httpx.HTTPError, RuntimeError, ValueError):
+            logger.exception("Unable to resolve customer for approved Rev PSA quote %s", result["quote_id"])
+    return result
+
+
+def revio_quote_intake_body(quote_record: dict) -> str:
+    lines = [
+        "A quote was approved in Rev PSA and is ready for project review.",
+        "",
+        f"Customer: {quote_record.get('customer_name') or 'Not returned by Rev PSA'}",
+        f"Rev PSA Customer ID: {quote_record.get('customer_id') or 'Not returned'}",
+        f"Quote ID: {quote_record['quote_id']}",
+        f"Quote: {quote_record.get('quote_name') or 'No quote description returned'}",
+        f"Status: {quote_record.get('status_name') or 'Approved'}",
+        f"Sales Owner: {quote_record.get('sales_owner') or 'Not returned'}",
+    ]
+    if quote_record.get("amount") not in (None, ""):
+        lines.append(f"Quote Total: {quote_record['amount']}")
+    if quote_record.get("approved_at"):
+        lines.append(f"Approved: {quote_record['approved_at'].isoformat()} UTC")
+    lines.extend(("", "Review the quote details, select the project type and owners, then create the project."))
+    return "\n".join(lines)
+
+
+async def sync_revio_quote_approvals() -> dict:
+    if not revio_configured():
+        return {"checked": 0, "imported": 0, "baselined": 0, "configured": False}
+    path = os.getenv("REVIO_QUOTE_PATH", "/billing/api/v1/quotes")
+    payload = await revio_psa_api_request("GET", path)
+    quote_records = [
+        normalized for normalized in (normalize_revio_quote(item) for item in revio_records(payload))
+        if normalized is not None
+    ]
+    db = SessionLocal()
+    imported = 0
+    baselined = 0
+    try:
+        baseline = db.get(IntegrationSyncState, REVIO_QUOTE_BASELINE_KEY)
+        first_run = baseline is None
+        now = datetime.utcnow()
+        for quote_record in quote_records:
+            quote_id = quote_record["quote_id"]
+            state = db.get(QuoteApprovalState, quote_id)
+            was_approved = bool(state and state.is_approved)
+            should_import = (
+                not first_run
+                and quote_record["is_approved"]
+                and not was_approved
+                and not (state and state.imported)
+            )
+            if should_import:
+                quote_record = await enrich_revio_quote(quote_record)
+                message_id = f"revio-psa-quote:{quote_id}"
+                intake = db.scalar(select(IntakeEmail).where(IntakeEmail.message_id == message_id))
+                if not intake:
+                    customer_name = quote_record.get("customer_name") or "Customer not returned"
+                    intake = IntakeEmail(
+                        message_id=message_id,
+                        sender_name="Rev PSA Quote Approval",
+                        sender_email=None,
+                        source_type="Rev PSA Quote",
+                        customer_id=quote_record.get("customer_id"),
+                        customer_name=quote_record.get("customer_name"),
+                        quote_id=quote_id,
+                        sales_owner=quote_record.get("sales_owner"),
+                        subject=f"Approved Quote #{quote_id} — {customer_name}"[:500],
+                        body=revio_quote_intake_body(quote_record),
+                        received_at=quote_record.get("approved_at") or now,
+                    )
+                    db.add(intake)
+                    db.flush()
+                    imported += 1
+                if not state:
+                    state = QuoteApprovalState(quote_id=quote_id, payload_json="{}")
+                    db.add(state)
+                state.imported = True
+                state.intake_id = intake.id
+            elif not state:
+                state = QuoteApprovalState(quote_id=quote_id, payload_json="{}")
+                db.add(state)
+                if first_run:
+                    baselined += 1
+
+            state.status_name = quote_record.get("status_name")
+            state.is_approved = quote_record["is_approved"]
+            state.customer_id = quote_record.get("customer_id")
+            state.customer_name = quote_record.get("customer_name")
+            state.quote_name = quote_record.get("quote_name")
+            state.sales_owner = quote_record.get("sales_owner")
+            state.approved_at = quote_record.get("approved_at")
+            state.payload_json = json.dumps(quote_record.get("raw") or {}, sort_keys=True, default=str)
+            state.last_seen_at = now
+
+        if first_run:
+            db.add(IntegrationSyncState(
+                key=REVIO_QUOTE_BASELINE_KEY,
+                value=json.dumps({"created_at": now.isoformat(), "quotes_seen": len(quote_records)}),
+            ))
+        db.commit()
+        return {
+            "checked": len(quote_records), "imported": imported,
+            "baselined": baselined, "configured": True,
+        }
+    finally:
+        db.close()
+
+
+async def revio_quote_approval_maintenance():
+    interval = max(60, int(os.getenv("REVIO_QUOTE_SYNC_SECONDS", "300")))
+    while True:
+        try:
+            result = await sync_revio_quote_approvals()
+            if result.get("imported"):
+                logger.info("Imported %s approved Rev PSA quote(s) into Project Intake", result["imported"])
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Unable to synchronize Rev PSA quote approvals")
+        await asyncio.sleep(interval)
 
 async def revio_project_api_request(method: str, path: str, *, json_body: dict | None = None, params: dict | None = None):
     if not revio_configured():
@@ -3344,6 +3603,7 @@ async def lifespan(app: FastAPI):
     ensure_project_phase_names()
     ensure_project_work_items()
     graph_task = asyncio.create_task(graph_subscription_maintenance())
+    quote_task = asyncio.create_task(revio_quote_approval_maintenance())
     hardware_task = asyncio.create_task(hardware_order_maintenance())
     notification_task = asyncio.create_task(project_notification_maintenance())
     # Always maintain the explicitly enabled Go-Live license-count workflow.
@@ -3353,6 +3613,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         graph_task.cancel()
+        quote_task.cancel()
         hardware_task.cancel()
         notification_task.cancel()
         psa_ticket_task.cancel()
@@ -3835,20 +4096,49 @@ async def graph_notifications(
 
 @app.post("/api/graph/sync")
 async def sync_graph_mailbox():
-    try:
-        added = await graph_sync_recent_messages()
-        await ensure_graph_subscription()
-        return {"status": "ok", "imported": added}
-    except httpx.HTTPStatusError as exc:
+    mailbox_result, quote_result = await asyncio.gather(
+        graph_sync_recent_messages() if graph_configured() else asyncio.sleep(0, result=0),
+        sync_revio_quote_approvals(),
+        return_exceptions=True,
+    )
+    errors = []
+    if isinstance(mailbox_result, Exception):
         detail = "Microsoft Graph rejected the mailbox request"
+        if isinstance(mailbox_result, httpx.HTTPStatusError):
+            try:
+                graph_error = mailbox_result.response.json().get("error", {})
+                detail = graph_error.get("message") or detail
+            except ValueError:
+                pass
+        else:
+            detail = str(mailbox_result)
+        errors.append(f"Mailbox: {detail}")
+        mailbox_imported = 0
+    else:
+        mailbox_imported = int(mailbox_result)
         try:
-            graph_error = exc.response.json().get("error", {})
-            detail = graph_error.get("message") or detail
-        except ValueError:
-            pass
-        raise HTTPException(502, detail)
-    except (httpx.HTTPError, KeyError, RuntimeError) as exc:
-        raise HTTPException(502, str(exc))
+            await ensure_graph_subscription()
+        except Exception:
+            logger.exception("Unable to renew Graph subscription during manual intake sync")
+
+    if isinstance(quote_result, Exception):
+        errors.append(f"Rev PSA quotes: {quote_result}")
+        quote_summary = {"checked": 0, "imported": 0, "baselined": 0}
+    else:
+        quote_summary = quote_result
+
+    if errors and isinstance(mailbox_result, Exception) and isinstance(quote_result, Exception):
+        raise HTTPException(502, " | ".join(errors))
+    quote_imported = int(quote_summary.get("imported", 0))
+    return {
+        "status": "ok" if not errors else "partial",
+        "imported": mailbox_imported + quote_imported,
+        "mailbox_imported": mailbox_imported,
+        "quote_imported": quote_imported,
+        "quotes_checked": int(quote_summary.get("checked", 0)),
+        "quotes_baselined": int(quote_summary.get("baselined", 0)),
+        "warnings": errors,
+    }
 
 @app.post("/api/intake/email", response_model=IntakeEmailOut, status_code=status.HTTP_201_CREATED)
 def receive_intake_email(

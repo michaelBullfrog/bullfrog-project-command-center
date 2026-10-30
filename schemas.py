@@ -204,6 +204,11 @@ class IntakeEmailCreate(BaseModel):
     subject: str = Field(min_length=1, max_length=500)
     sender_name: str | None = Field(default=None, max_length=200)
     sender_email: str | None = Field(default=None, max_length=320)
+    source_type: str | None = Field(default=None, max_length=40)
+    customer_id: str | None = Field(default=None, max_length=50)
+    customer_name: str | None = Field(default=None, max_length=255)
+    quote_id: str | None = Field(default=None, max_length=100)
+    sales_owner: str | None = Field(default=None, max_length=200)
     body: str | None = None
     received_at: datetime | None = None
 
