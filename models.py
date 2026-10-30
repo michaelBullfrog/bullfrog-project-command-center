@@ -203,6 +203,34 @@ class AutomationEvent(Base):
     processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
+
+class IntegrationSyncState(Base):
+    __tablename__ = "integration_sync_states"
+
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class QuoteApprovalState(Base):
+    __tablename__ = "quote_approval_states"
+
+    quote_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    status_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    is_approved: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    imported: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    customer_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    quote_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    sales_owner: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    intake_id: Mapped[int | None] = mapped_column(
+        ForeignKey("intake_emails.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    payload_json: Mapped[str] = mapped_column(Text)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
 class PsaTicketWorkflow(Base):
     __tablename__ = "psa_ticket_workflows"
     __table_args__ = (UniqueConstraint("project_id", "workflow_key", name="uq_psa_ticket_workflow_step"),)
@@ -229,6 +257,11 @@ class IntakeEmail(Base):
     message_id: Mapped[str] = mapped_column(String(500), index=True)
     sender_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     sender_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    source_type: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    customer_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    quote_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    sales_owner: Mapped[str | None] = mapped_column(String(200), nullable=True)
     subject: Mapped[str] = mapped_column(String(500))
     body: Mapped[str | None] = mapped_column(Text, nullable=True)
     received_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
