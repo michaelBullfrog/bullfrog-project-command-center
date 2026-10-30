@@ -509,6 +509,37 @@ async def graph_access_token(client: httpx.AsyncClient) -> str:
     response.raise_for_status()
     return response.json()["access_token"]
 
+
+def order_graph_credentials() -> tuple[str | None, str | None, str | None]:
+    """Return dedicated Orders-monitor credentials, falling back to the shared Graph app."""
+    return (
+        os.getenv("ORDER_GRAPH_TENANT_ID") or os.getenv("MS_TENANT_ID"),
+        os.getenv("ORDER_GRAPH_CLIENT_ID") or os.getenv("MS_CLIENT_ID"),
+        os.getenv("ORDER_GRAPH_CLIENT_SECRET") or os.getenv("MS_CLIENT_SECRET"),
+    )
+
+
+def order_graph_configured() -> bool:
+    return all(order_graph_credentials())
+
+
+async def order_graph_access_token(client: httpx.AsyncClient) -> str:
+    tenant_id, client_id, client_secret = order_graph_credentials()
+    if not all((tenant_id, client_id, client_secret)):
+        raise RuntimeError("Microsoft Graph credentials for the Orders monitor are not configured")
+    tenant = quote(str(tenant_id), safe="")
+    response = await client.post(
+        f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+        data={
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "scope": GRAPH_SCOPE,
+            "grant_type": "client_credentials",
+        },
+    )
+    response.raise_for_status()
+    return response.json()["access_token"]
+
 def graph_received_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -692,13 +723,13 @@ async def graph_order_folder_messages(
 
 
 async def sync_order_folder_notifications() -> dict:
-    if not graph_configured():
-        raise RuntimeError("Microsoft Graph is not configured")
+    if not order_graph_configured():
+        raise RuntimeError("Microsoft Graph credentials for the Orders monitor are not configured")
     mailboxes = order_monitor_mailboxes()
     fetched: dict[str, list[dict]] = {}
     errors: list[str] = []
     async with httpx.AsyncClient(timeout=30.0) as client:
-        token = await graph_access_token(client)
+        token = await order_graph_access_token(client)
         for mailbox in mailboxes:
             try:
                 fetched[mailbox] = await graph_order_folder_messages(client, token, mailbox)
@@ -770,6 +801,7 @@ async def sync_order_folder_notifications() -> dict:
                     f"Proposal Signed — {notification.customer_name}",
                     body,
                     sender=sender,
+                    use_order_credentials=True,
                 )
                 notification.status = "Sent"
                 notification.email_sent_at = datetime.utcnow()
@@ -3308,9 +3340,17 @@ async def psa_ticket_maintenance():
 
 
 async def graph_send_project_notification(
-    recipient: str, subject: str, body: str, sender: str | None = None
+    recipient: str,
+    subject: str,
+    body: str,
+    sender: str | None = None,
+    *,
+    use_order_credentials: bool = False,
 ):
-    if not graph_configured():
+    if use_order_credentials:
+        if not order_graph_configured():
+            raise RuntimeError("Microsoft Graph credentials for the Orders monitor are not configured")
+    elif not graph_configured():
         raise RuntimeError("Microsoft Graph is not configured")
     sender_address = (
         sender
@@ -3319,7 +3359,11 @@ async def graph_send_project_notification(
     if not sender_address:
         raise RuntimeError("The project notification sender is not configured")
     async with httpx.AsyncClient(timeout=30.0) as client:
-        token = await graph_access_token(client)
+        token = (
+            await order_graph_access_token(client)
+            if use_order_credentials
+            else await graph_access_token(client)
+        )
         response = await client.post(
             f"{GRAPH_API}/users/{quote(sender_address, safe='')}/sendMail",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
