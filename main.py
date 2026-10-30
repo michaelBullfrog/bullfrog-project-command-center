@@ -927,7 +927,20 @@ def revio_quote_baseline_at(baseline: IntegrationSyncState | None) -> datetime |
     return graph_received_datetime(str(value)) if value else None
 
 
-def revio_recent_quote_summaries(quote_records: list[dict], limit: int = 5) -> list[dict]:
+def revio_quote_min_id() -> int:
+    return max(0, int(os.getenv("REVIO_QUOTE_MIN_ID", "1379")))
+
+
+def revio_quote_meets_minimum(quote_id: str | None, minimum_quote_id: int) -> bool:
+    try:
+        return int(str(quote_id or "").strip()) >= minimum_quote_id
+    except (TypeError, ValueError):
+        return False
+
+
+def revio_recent_quote_summaries(
+    quote_records: list[dict], limit: int = 5, minimum_quote_id: int = 0
+) -> list[dict]:
     def sort_key(item: dict):
         quote_id = str(item.get("quote_id") or "")
         try:
@@ -940,6 +953,7 @@ def revio_recent_quote_summaries(quote_records: list[dict], limit: int = 5) -> l
     completed = [
         item for item in quote_records
         if normalize_customer_name(str(item.get("status_name") or "")) in {"complete", "completed"}
+        and revio_quote_meets_minimum(item.get("quote_id"), minimum_quote_id)
     ]
     summaries = []
     for item in sorted(completed, key=sort_key, reverse=True)[:max(1, limit)]:
@@ -1085,19 +1099,19 @@ async def enrich_revio_quote(quote_record: dict) -> dict:
 
 def revio_quote_intake_body(quote_record: dict) -> str:
     lines = [
-        "A quote was approved in Rev PSA and is ready for project review.",
+        "A quote was completed in Rev PSA and is ready for project review.",
         "",
         f"Customer: {quote_record.get('customer_name') or 'Not returned by Rev PSA'}",
         f"Rev PSA Customer ID: {quote_record.get('customer_id') or 'Not returned'}",
         f"Quote ID: {quote_record['quote_id']}",
         f"Quote: {quote_record.get('quote_name') or 'No quote description returned'}",
-        f"Status: {quote_record.get('status_name') or 'Approved'}",
+        f"Status: {quote_record.get('status_name') or 'Complete'}",
         f"Sales Owner: {quote_record.get('sales_owner') or 'Not returned'}",
     ]
     if quote_record.get("amount") not in (None, ""):
         lines.append(f"Quote Total: {quote_record['amount']}")
     if quote_record.get("approved_at"):
-        lines.append(f"Approved: {quote_record['approved_at'].isoformat()} UTC")
+        lines.append(f"Completed/updated: {quote_record['approved_at'].isoformat()} UTC")
     lines.extend(("", "Review the quote details, select the project type and owners, then create the project."))
     return "\n".join(lines)
 
@@ -1121,33 +1135,23 @@ async def sync_revio_quote_approvals(force_quote_id: str | None = None) -> dict:
         normalized for normalized in (normalize_revio_quote(item) for item in raw_quotes)
         if normalized is not None
     ]
+    minimum_quote_id = revio_quote_min_id()
     db = SessionLocal()
     imported = 0
     baselined = 0
     try:
         baseline = db.get(IntegrationSyncState, REVIO_QUOTE_BASELINE_KEY)
         first_run = baseline is None
-        baseline_at = revio_quote_baseline_at(baseline)
         now = datetime.utcnow()
         for quote_record in quote_records:
             quote_id = quote_record["quote_id"]
             state = db.get(QuoteApprovalState, quote_id)
-            was_approved = bool(state and state.is_approved)
-            discovered_after_baseline = (
-                state is not None
-                or baseline_at is None
-                or (
-                    revio_quote_observed_at(quote_record) is not None
-                    and revio_quote_observed_at(quote_record) >= baseline_at
-                )
-            )
             should_import = (
-                not first_run
-                and quote_record["is_complete"]
+                quote_record["is_complete"]
                 and not (state and state.imported)
                 and (
                     quote_id == force_quote_id
-                    or (not was_approved and discovered_after_baseline)
+                    or revio_quote_meets_minimum(quote_id, minimum_quote_id)
                 )
             )
             if should_import:
@@ -1158,14 +1162,14 @@ async def sync_revio_quote_approvals(force_quote_id: str | None = None) -> dict:
                     customer_name = quote_record.get("customer_name") or "Customer not returned"
                     intake = IntakeEmail(
                         message_id=message_id,
-                        sender_name="Rev PSA Quote Approval",
+                        sender_name="Rev PSA Completed Quote",
                         sender_email=None,
                         source_type="Rev PSA Quote",
                         customer_id=quote_record.get("customer_id"),
                         customer_name=quote_record.get("customer_name"),
                         quote_id=quote_id,
                         sales_owner=quote_record.get("sales_owner"),
-                        subject=f"Approved Quote #{quote_id} — {customer_name}"[:500],
+                        subject=f"Completed Quote #{quote_id} — {customer_name}"[:500],
                         body=revio_quote_intake_body(quote_record),
                         received_at=quote_record.get("approved_at") or now,
                     )
@@ -1205,7 +1209,11 @@ async def sync_revio_quote_approvals(force_quote_id: str | None = None) -> dict:
             "completed": sum(1 for item in quote_records if item["is_complete"]),
             "imported": imported, "baselined": baselined,
             "pages": pages_checked, "last_page": last_page,
-            "recent_quotes": revio_recent_quote_summaries(quote_records),
+            "recent_quotes": revio_recent_quote_summaries(
+                quote_records,
+                minimum_quote_id=0 if force_quote_id else minimum_quote_id,
+            ),
+            "minimum_quote_id": minimum_quote_id,
             "configured": True,
         }
     finally:
@@ -1218,7 +1226,7 @@ async def revio_quote_approval_maintenance():
         try:
             result = await sync_revio_quote_approvals()
             if result.get("imported"):
-                logger.info("Imported %s approved Rev PSA quote(s) into Project Intake", result["imported"])
+                logger.info("Imported %s completed Rev PSA quote(s) into Project Intake", result["imported"])
         except asyncio.CancelledError:
             raise
         except Exception:
