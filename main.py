@@ -635,7 +635,7 @@ async def graph_subscription_maintenance():
 
 def order_monitor_mailboxes() -> list[str]:
     raw = os.getenv(
-        "ORDER_MONITOR_MAILBOXES", "jack@bullfrog.net,matt@bullfrog.net"
+        "ORDER_MONITOR_MAILBOXES", "jack@bullfrog.net,matthew@bullfrog.net"
     )
     return list(dict.fromkeys(
         value.strip().lower() for value in raw.split(",") if value.strip()
