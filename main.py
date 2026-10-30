@@ -692,23 +692,37 @@ async def graph_order_folder_messages(
     headers = {"Authorization": f"Bearer {token}"}
     folder_name = os.getenv("ORDER_MONITOR_FOLDER", "Orders").strip() or "Orders"
     escaped_folder_name = folder_name.replace("'", "''")
-    response = await client.get(
-        f"{GRAPH_API}/users/{quote(mailbox, safe='')}/mailFolders",
-        headers=headers,
-        params={
-            "$select": "id,displayName",
-            "$filter": f"displayName eq '{escaped_folder_name}'",
-            "$top": "10",
-        },
+    folder = None
+    folder_params = {
+        "$select": "id,displayName",
+        "$filter": f"displayName eq '{escaped_folder_name}'",
+        "$top": "10",
+    }
+    folder_paths = (
+        "mailFolders",
+        "mailFolders/inbox/childFolders",
     )
-    response.raise_for_status()
-    folders = response.json().get("value", [])
-    folder = next(
-        (item for item in folders if str(item.get("displayName") or "").casefold() == folder_name.casefold()),
-        None,
-    )
+    for folder_path in folder_paths:
+        response = await client.get(
+            f"{GRAPH_API}/users/{quote(mailbox, safe='')}/{folder_path}",
+            headers=headers,
+            params=folder_params,
+        )
+        response.raise_for_status()
+        folders = response.json().get("value", [])
+        folder = next(
+            (
+                item for item in folders
+                if str(item.get("displayName") or "").casefold() == folder_name.casefold()
+            ),
+            None,
+        )
+        if folder:
+            break
     if not folder or not folder.get("id"):
-        raise RuntimeError(f'{mailbox} does not have a top-level mail folder named "{folder_name}"')
+        raise RuntimeError(
+            f'{mailbox} does not have a top-level or Inbox child folder named "{folder_name}"'
+        )
     response = await client.get(
         f"{GRAPH_API}/users/{quote(mailbox, safe='')}/mailFolders/{quote(str(folder['id']), safe='')}/messages",
         headers=headers,
