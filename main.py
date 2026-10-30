@@ -817,6 +817,7 @@ def normalize_revio_quote(item: dict) -> dict | None:
     is_approved = approved_flag is True or str(approved_flag).strip().lower() == "true"
     if not is_approved:
         is_approved = normalized_status in approved_statuses
+    is_complete = normalized_status in {"complete", "completed"}
 
     approved_value = revio_quote_nested_value(
         item,
@@ -861,6 +862,7 @@ def normalize_revio_quote(item: dict) -> dict | None:
         "quote_id": str(quote_id),
         "status_name": str(status_name or "Unknown"),
         "is_approved": is_approved,
+        "is_complete": is_complete,
         "approved_at": approved_at,
         "customer_id": str(customer_id) if customer_id not in (None, "") else None,
         "customer_name": str(customer_name).strip() if customer_name not in (None, "") else None,
@@ -935,14 +937,19 @@ def revio_recent_quote_summaries(quote_records: list[dict], limit: int = 5) -> l
         observed_at = revio_quote_observed_at(item)
         return (numeric_id, observed_at or datetime.min, quote_id)
 
+    completed = [
+        item for item in quote_records
+        if normalize_customer_name(str(item.get("status_name") or "")) in {"complete", "completed"}
+    ]
     summaries = []
-    for item in sorted(quote_records, key=sort_key, reverse=True)[:max(1, limit)]:
+    for item in sorted(completed, key=sort_key, reverse=True)[:max(1, limit)]:
         observed_at = revio_quote_observed_at(item)
         summaries.append({
             "quote_id": item.get("quote_id"),
             "customer_id": item.get("customer_id"),
             "customer_name": item.get("customer_name"),
             "quote_name": item.get("quote_name"),
+            "sales_owner": item.get("sales_owner"),
             "status": item.get("status_name") or "Unknown",
             "amount": item.get("amount"),
             "updated_at": observed_at.isoformat() + "Z" if observed_at else None,
@@ -1136,7 +1143,7 @@ async def sync_revio_quote_approvals(force_quote_id: str | None = None) -> dict:
             )
             should_import = (
                 not first_run
-                and quote_record["is_approved"]
+                and quote_record["is_complete"]
                 and not (state and state.imported)
                 and (
                     quote_id == force_quote_id
@@ -1195,6 +1202,7 @@ async def sync_revio_quote_approvals(force_quote_id: str | None = None) -> dict:
         return {
             "checked": len(quote_records),
             "approved": sum(1 for item in quote_records if item["is_approved"]),
+            "completed": sum(1 for item in quote_records if item["is_complete"]),
             "imported": imported, "baselined": baselined,
             "pages": pages_checked, "last_page": last_page,
             "recent_quotes": revio_recent_quote_summaries(quote_records),
