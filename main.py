@@ -925,6 +925,31 @@ def revio_quote_baseline_at(baseline: IntegrationSyncState | None) -> datetime |
     return graph_received_datetime(str(value)) if value else None
 
 
+def revio_recent_quote_summaries(quote_records: list[dict], limit: int = 5) -> list[dict]:
+    def sort_key(item: dict):
+        quote_id = str(item.get("quote_id") or "")
+        try:
+            numeric_id = int(quote_id)
+        except (TypeError, ValueError):
+            numeric_id = -1
+        observed_at = revio_quote_observed_at(item)
+        return (numeric_id, observed_at or datetime.min, quote_id)
+
+    summaries = []
+    for item in sorted(quote_records, key=sort_key, reverse=True)[:max(1, limit)]:
+        observed_at = revio_quote_observed_at(item)
+        summaries.append({
+            "quote_id": item.get("quote_id"),
+            "customer_id": item.get("customer_id"),
+            "customer_name": item.get("customer_name"),
+            "quote_name": item.get("quote_name"),
+            "status": item.get("status_name") or "Unknown",
+            "amount": item.get("amount"),
+            "updated_at": observed_at.isoformat() + "Z" if observed_at else None,
+        })
+    return summaries
+
+
 async def fetch_revio_quotes() -> tuple[list[dict], int, int]:
     path = os.getenv("REVIO_QUOTE_PATH", "/billing/api/v1/quotes")
     page_size = max(10, min(int(os.getenv("REVIO_QUOTE_PAGE_SIZE", "10")), 100))
@@ -1072,7 +1097,7 @@ def revio_quote_intake_body(quote_record: dict) -> str:
 
 async def sync_revio_quote_approvals(force_quote_id: str | None = None) -> dict:
     if not revio_configured():
-        return {"checked": 0, "approved": 0, "imported": 0, "baselined": 0, "pages": 0, "last_page": 0, "configured": False}
+        return {"checked": 0, "approved": 0, "imported": 0, "baselined": 0, "pages": 0, "last_page": 0, "recent_quotes": [], "configured": False}
     force_quote_id = str(force_quote_id or "").strip() or None
     if force_quote_id:
         path = os.getenv("REVIO_QUOTE_PATH", "/billing/api/v1/quotes").rstrip("/")
@@ -1171,7 +1196,9 @@ async def sync_revio_quote_approvals(force_quote_id: str | None = None) -> dict:
             "checked": len(quote_records),
             "approved": sum(1 for item in quote_records if item["is_approved"]),
             "imported": imported, "baselined": baselined,
-            "pages": pages_checked, "last_page": last_page, "configured": True,
+            "pages": pages_checked, "last_page": last_page,
+            "recent_quotes": revio_recent_quote_summaries(quote_records),
+            "configured": True,
         }
     finally:
         db.close()

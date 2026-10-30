@@ -64,6 +64,7 @@
 button:disabled{opacity:.72;cursor:wait}
 .button-spinner{display:inline-block;width:13px;height:13px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;vertical-align:-2px;animation:button-spin .7s linear infinite}
 @keyframes button-spin{to{transform:rotate(360deg)}}
+.approved-quote-sync-panel{flex-wrap:wrap}.approved-quote-sync-panel>#approved-quote-sync-status{flex:1}.approved-quote-recent{flex:0 0 100%;width:100%}.recent-quote-title{margin-top:3px;color:var(--green-dark);font-size:10px;font-weight:900;letter-spacing:.07em;text-transform:uppercase}.recent-quote-list{display:grid;margin-top:7px;border:1px solid #dce8da;border-radius:9px;overflow:hidden;background:#fff}.recent-quote-row{display:grid;grid-template-columns:minmax(145px,.8fr) minmax(180px,1.4fr) minmax(130px,.7fr);gap:12px;align-items:center;padding:10px 12px;border-top:1px solid #e7eee5}.recent-quote-row:first-child{border-top:0}.recent-quote-row strong,.recent-quote-row span,.recent-quote-row small{display:block}.recent-quote-row strong{font-size:12px;color:var(--ink)}.recent-quote-row span,.recent-quote-description,.recent-quote-row small{font-size:10px;color:var(--muted)}.recent-quote-description{overflow-wrap:anywhere}.recent-quote-status{color:var(--green-dark)!important;font-weight:850}.recent-quote-row>div:last-child{text-align:right}@media(max-width:760px){.recent-quote-row{grid-template-columns:1fr}.recent-quote-row>div:last-child{text-align:left}}
 
 
 /* Phase work planning and Rev PSA linking */
