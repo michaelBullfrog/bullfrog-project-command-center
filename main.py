@@ -1203,16 +1203,23 @@ async def sync_revio_quote_approvals(force_quote_id: str | None = None) -> dict:
                 value=json.dumps({"created_at": now.isoformat(), "quotes_seen": len(quote_records)}),
             ))
         db.commit()
+        recent_quotes = revio_recent_quote_summaries(
+            quote_records,
+            minimum_quote_id=0 if force_quote_id else minimum_quote_id,
+        )
+        for recent_quote in recent_quotes:
+            quote_state = db.get(QuoteApprovalState, str(recent_quote["quote_id"]))
+            intake = db.get(IntakeEmail, quote_state.intake_id) if quote_state and quote_state.intake_id else None
+            recent_quote["intake_id"] = intake.id if intake else None
+            recent_quote["intake_status"] = intake.status if intake else None
+            recent_quote["project_id"] = intake.project_id if intake else None
         return {
             "checked": len(quote_records),
             "approved": sum(1 for item in quote_records if item["is_approved"]),
             "completed": sum(1 for item in quote_records if item["is_complete"]),
             "imported": imported, "baselined": baselined,
             "pages": pages_checked, "last_page": last_page,
-            "recent_quotes": revio_recent_quote_summaries(
-                quote_records,
-                minimum_quote_id=0 if force_quote_id else minimum_quote_id,
-            ),
+            "recent_quotes": recent_quotes,
             "minimum_quote_id": minimum_quote_id,
             "configured": True,
         }
