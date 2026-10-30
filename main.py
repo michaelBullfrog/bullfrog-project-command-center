@@ -22,7 +22,7 @@ from sqlalchemy import inspect, or_, select, text, update
 from sqlalchemy.orm import Session, selectinload
 
 from database import Base, SessionLocal, engine, get_db
-from models import AutomationEvent, CustomProjectTemplate, CustomerContact, HardwareOrderWorkflow, IntegrationSyncState, IntakeEmail, Milestone, NoteAttachment, Project, ProjectActivity, ProjectNote, ProjectWorkItem, PsaTicketWorkflow, QuoteApprovalState
+from models import AutomationEvent, CustomProjectTemplate, CustomerContact, HardwareOrderWorkflow, IntegrationSyncState, IntakeEmail, Milestone, NoteAttachment, OrderFolderNotification, Project, ProjectActivity, ProjectNote, ProjectWorkItem, PsaTicketWorkflow, QuoteApprovalState
 from schemas import (
     ContactCreate, ContactOut, ContactUpdate, IntakeConvert, IntakeEmailCreate, IntakeEmailOut,
     MilestoneCreate, MilestoneOut, MilestoneUpdate, NoteOut, ProjectCreate, ProjectOut, ProjectUpdate,
@@ -63,6 +63,10 @@ ALLOWED_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf", ".doc", ".docx
 INLINE_ATTACHMENT_TYPES = {"image/png", "image/jpeg", "application/pdf"}
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 GRAPH_API = "https://graph.microsoft.com/v1.0"
+SIGNED_PROPOSAL_SUBJECT = re.compile(
+    r'^[\"“](?P<customer>.+?)[\"”]\s+document has been completed by all participants\s*$',
+    re.IGNORECASE,
+)
 logger = logging.getLogger("bullfrog.graph")
 REVIO_PAYMENT_WEBHOOK_EVENTS = {
     "PAYMENT_CREATED", "PAYMENT_REAPPLIED", "PAYMENT_REVERSED",
@@ -627,6 +631,179 @@ async def graph_subscription_maintenance():
         except Exception:
             logger.exception("Unable to create or renew Microsoft Graph subscription")
         await asyncio.sleep(12 * 60 * 60)
+
+
+def order_monitor_mailboxes() -> list[str]:
+    raw = os.getenv(
+        "ORDER_MONITOR_MAILBOXES", "jack@bullfrog.net,matt@bullfrog.net"
+    )
+    return list(dict.fromkeys(
+        value.strip().lower() for value in raw.split(",") if value.strip()
+    ))
+
+
+def signed_proposal_customer(subject: str | None) -> str | None:
+    match = SIGNED_PROPOSAL_SUBJECT.match(str(subject or "").strip())
+    if not match:
+        return None
+    customer = " ".join(match.group("customer").split()).strip()
+    return customer[:255] or None
+
+
+def order_monitor_baseline_key(mailbox: str) -> str:
+    digest = hashlib.sha256(mailbox.lower().encode("utf-8")).hexdigest()[:20]
+    return f"order_folder_baseline:{digest}"
+
+
+async def graph_order_folder_messages(
+    client: httpx.AsyncClient, token: str, mailbox: str, limit: int = 50
+) -> list[dict]:
+    headers = {"Authorization": f"Bearer {token}"}
+    folder_name = os.getenv("ORDER_MONITOR_FOLDER", "Orders").strip() or "Orders"
+    escaped_folder_name = folder_name.replace("'", "''")
+    response = await client.get(
+        f"{GRAPH_API}/users/{quote(mailbox, safe='')}/mailFolders",
+        headers=headers,
+        params={
+            "$select": "id,displayName",
+            "$filter": f"displayName eq '{escaped_folder_name}'",
+            "$top": "10",
+        },
+    )
+    response.raise_for_status()
+    folders = response.json().get("value", [])
+    folder = next(
+        (item for item in folders if str(item.get("displayName") or "").casefold() == folder_name.casefold()),
+        None,
+    )
+    if not folder or not folder.get("id"):
+        raise RuntimeError(f'{mailbox} does not have a top-level mail folder named "{folder_name}"')
+    response = await client.get(
+        f"{GRAPH_API}/users/{quote(mailbox, safe='')}/mailFolders/{quote(str(folder['id']), safe='')}/messages",
+        headers=headers,
+        params={
+            "$select": "id,internetMessageId,subject,receivedDateTime",
+            "$orderby": "receivedDateTime desc",
+            "$top": str(max(1, min(limit, 100))),
+        },
+    )
+    response.raise_for_status()
+    return [item for item in response.json().get("value", []) if isinstance(item, dict)]
+
+
+async def sync_order_folder_notifications() -> dict:
+    if not graph_configured():
+        raise RuntimeError("Microsoft Graph is not configured")
+    mailboxes = order_monitor_mailboxes()
+    fetched: dict[str, list[dict]] = {}
+    errors: list[str] = []
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        token = await graph_access_token(client)
+        for mailbox in mailboxes:
+            try:
+                fetched[mailbox] = await graph_order_folder_messages(client, token, mailbox)
+            except (httpx.HTTPError, RuntimeError) as exc:
+                errors.append(f"{mailbox}: {exc}")
+
+    discovered = 0
+    baselined = 0
+    sent = 0
+    db = SessionLocal()
+    try:
+        for mailbox, messages in fetched.items():
+            baseline_key = order_monitor_baseline_key(mailbox)
+            first_run = db.get(IntegrationSyncState, baseline_key) is None
+            for message in reversed(messages):
+                customer = signed_proposal_customer(message.get("subject"))
+                message_id = str(message.get("id") or "").strip()
+                if not customer or not message_id:
+                    continue
+                existing = db.scalar(select(OrderFolderNotification).where(
+                    OrderFolderNotification.mailbox == mailbox,
+                    OrderFolderNotification.message_id == message_id,
+                ))
+                if existing:
+                    continue
+                db.add(OrderFolderNotification(
+                    mailbox=mailbox,
+                    message_id=message_id,
+                    internet_message_id=str(message.get("internetMessageId") or "") or None,
+                    customer_name=customer,
+                    subject=str(message.get("subject") or "")[:500],
+                    received_at=graph_received_datetime(message.get("receivedDateTime")),
+                    status="Baselined" if first_run else "Pending",
+                ))
+                if first_run:
+                    baselined += 1
+                else:
+                    discovered += 1
+            if first_run:
+                db.add(IntegrationSyncState(
+                    key=baseline_key,
+                    value=json.dumps({"created_at": datetime.utcnow().isoformat(), "mailbox": mailbox}),
+                ))
+        db.commit()
+
+        pending = list(db.scalars(select(OrderFolderNotification).where(
+            OrderFolderNotification.status.in_(("Pending", "Retry"))
+        ).order_by(OrderFolderNotification.received_at.asc().nullsfirst())).all())
+        recipient = os.getenv("ORDER_NOTIFICATION_RECIPIENT", "chad@bullfrog.net").strip()
+        sender = os.getenv("ORDER_NOTIFICATION_SENDER", "projectintake@bullfrog.net").strip()
+        if not recipient or not sender:
+            raise RuntimeError("The signed-proposal notification sender or recipient is not configured")
+        for notification in pending:
+            if notification.received_at:
+                timezone_name = os.getenv("ORDER_NOTIFICATION_TIMEZONE", "America/New_York")
+                received_at = notification.received_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(timezone_name))
+                received = received_at.strftime("%B %d, %Y at %I:%M %p %Z")
+            else:
+                received = "an unknown time"
+            body = (
+                f"<p>A proposal has been signed by <strong>{html.escape(notification.customer_name)}</strong>.</p>"
+                f"<p>The completion email was received in <strong>{html.escape(notification.mailbox)}</strong>'s "
+                f"Orders folder on {html.escape(received)}.</p>"
+                f"<p>Rev PSA project intake can now be started for this customer.</p>"
+            )
+            try:
+                await graph_send_project_notification(
+                    recipient,
+                    f"Proposal Signed — {notification.customer_name}",
+                    body,
+                    sender=sender,
+                )
+                notification.status = "Sent"
+                notification.email_sent_at = datetime.utcnow()
+                notification.last_error = None
+                sent += 1
+            except (httpx.HTTPError, RuntimeError) as exc:
+                notification.status = "Retry"
+                notification.last_error = str(exc)[:2000]
+            db.commit()
+        return {
+            "mailboxes": mailboxes,
+            "discovered": discovered,
+            "baselined": baselined,
+            "sent": sent,
+            "errors": errors,
+        }
+    finally:
+        db.close()
+
+
+async def order_folder_notification_maintenance():
+    interval = max(60, int(os.getenv("ORDER_MONITOR_SECONDS", "300")))
+    while True:
+        try:
+            result = await sync_order_folder_notifications()
+            if result.get("sent"):
+                logger.info("Sent %s signed-proposal notification(s) to Chad", result["sent"])
+            if result.get("errors"):
+                logger.warning("Order folder monitor warnings: %s", " | ".join(result["errors"]))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Unable to monitor signed-proposal Orders folders")
+        await asyncio.sleep(interval)
 
 def ensure_database_schema():
     # create_all handles fresh databases; this small compatibility migration
@@ -3827,6 +4004,7 @@ async def lifespan(app: FastAPI):
     ensure_project_phase_names()
     ensure_project_work_items()
     graph_task = asyncio.create_task(graph_subscription_maintenance())
+    order_folder_task = asyncio.create_task(order_folder_notification_maintenance())
     quote_task = asyncio.create_task(revio_quote_approval_maintenance())
     hardware_task = asyncio.create_task(hardware_order_maintenance())
     notification_task = asyncio.create_task(project_notification_maintenance())
@@ -3837,6 +4015,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         graph_task.cancel()
+        order_folder_task.cancel()
         quote_task.cancel()
         hardware_task.cancel()
         notification_task.cancel()
@@ -4363,6 +4542,17 @@ async def sync_graph_mailbox():
         "quotes_baselined": int(quote_summary.get("baselined", 0)),
         "warnings": errors,
     }
+
+
+@app.post("/api/order-monitor/sync")
+async def sync_order_monitor_now():
+    try:
+        return {"status": "ok", **(await sync_order_folder_notifications())}
+    except httpx.HTTPStatusError as exc:
+        detail = revio_http_error_detail(exc, "Microsoft Graph rejected the Orders-folder check")
+        raise HTTPException(502, f"Orders-folder check failed with status {exc.response.status_code}: {detail}")
+    except (httpx.HTTPError, RuntimeError, ValueError, ZoneInfoNotFoundError) as exc:
+        raise HTTPException(502, f"Orders-folder check failed: {exc}")
 
 
 @app.post("/api/revio/quotes/sync-approved")
