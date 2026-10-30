@@ -13,6 +13,17 @@ class FakeTokenResponse:
         return {"access_token": "orders-token"}
 
 
+class FakeGraphResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+
 class OrderGraphCredentialTests(unittest.IsolatedAsyncioTestCase):
     def test_dedicated_credentials_take_precedence(self):
         environment = {
@@ -59,6 +70,24 @@ class OrderGraphCredentialTests(unittest.IsolatedAsyncioTestCase):
         _, kwargs = client.post.await_args
         self.assertEqual(kwargs["data"]["client_id"], "orders-client")
         self.assertEqual(kwargs["data"]["client_secret"], "orders-secret")
+
+    async def test_orders_folder_can_be_an_inbox_child(self):
+        client = AsyncMock()
+        client.get.side_effect = [
+            FakeGraphResponse({"value": []}),
+            FakeGraphResponse({"value": [{"id": "orders-id", "displayName": "Orders"}]}),
+            FakeGraphResponse({"value": [{"id": "message-id", "subject": "Test"}]}),
+        ]
+
+        messages = await main.graph_order_folder_messages(
+            client, "orders-token", "matthew@bullfrog.net"
+        )
+
+        self.assertEqual(messages[0]["id"], "message-id")
+        second_url = client.get.await_args_list[1].args[0]
+        self.assertIn("/mailFolders/inbox/childFolders", second_url)
+        third_url = client.get.await_args_list[2].args[0]
+        self.assertIn("/mailFolders/orders-id/messages", third_url)
 
 
 if __name__ == "__main__":
