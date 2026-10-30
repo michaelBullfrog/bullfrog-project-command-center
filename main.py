@@ -775,6 +775,7 @@ async def revio_psa_api_request(method: str, path: str, *, json_body: dict | Non
 
 
 REVIO_QUOTE_BASELINE_KEY = "revio_psa_quote_approval_baseline"
+REVIO_QUOTE_LAST_PAGE_KEY = "revio_psa_quote_last_page"
 
 
 def revio_quote_nested_value(item: dict, *keys):
@@ -870,22 +871,37 @@ def normalize_revio_quote(item: dict) -> dict | None:
     }
 
 
-def revio_quote_page_has_more(payload: dict, page: int, page_size: int, record_count: int) -> bool:
+def revio_quote_page_count(payload: dict, page_size: int) -> int | None:
     containers = [payload]
-    data = payload.get("data") if isinstance(payload, dict) else None
-    if isinstance(data, dict):
-        containers.append(data)
+    for key in ("data", "pagination", "paging", "meta", "metadata"):
+        value = payload.get(key) if isinstance(payload, dict) else None
+        if isinstance(value, dict):
+            containers.append(value)
     for container in containers:
-        has_more = revio_value(container, "hasMore", "has_more")
-        if has_more is not None:
-            return has_more is True or str(has_more).strip().lower() == "true"
+        pages = revio_value(container, "totalPages", "total_pages", "pageCount", "page_count", "lastPage", "last_page")
+        if pages not in (None, ""):
+            try:
+                return max(1, int(pages))
+            except (TypeError, ValueError):
+                pass
         total = revio_value(container, "totalCount", "total_count", "recordCount", "record_count", "totalRecords")
         if total not in (None, ""):
             try:
-                return page * page_size < int(total)
+                return max(1, (int(total) + page_size - 1) // page_size)
             except (TypeError, ValueError):
                 pass
-    return record_count >= page_size
+    return None
+
+
+def revio_quote_page_signature(records: list[dict]) -> tuple[str, ...]:
+    return tuple(
+        str(quote_id)
+        for quote_id in (
+            revio_quote_nested_value(item, "quoteId", "quote_id", "id")
+            for item in records
+        )
+        if quote_id not in (None, "")
+    )
 
 
 def revio_quote_observed_at(quote_record: dict) -> datetime | None:
@@ -909,32 +925,99 @@ def revio_quote_baseline_at(baseline: IntegrationSyncState | None) -> datetime |
     return graph_received_datetime(str(value)) if value else None
 
 
-async def fetch_revio_quotes() -> tuple[list[dict], int]:
+async def fetch_revio_quotes() -> tuple[list[dict], int, int]:
     path = os.getenv("REVIO_QUOTE_PATH", "/billing/api/v1/quotes")
-    page_size = max(10, min(int(os.getenv("REVIO_QUOTE_PAGE_SIZE", "100")), 500))
-    max_pages = max(1, min(int(os.getenv("REVIO_QUOTE_MAX_PAGES", "20")), 100))
+    page_size = max(10, min(int(os.getenv("REVIO_QUOTE_PAGE_SIZE", "10")), 100))
+    recent_pages = max(1, min(int(os.getenv("REVIO_QUOTE_RECENT_PAGES", "5")), 20))
+    max_probe_page = max(32, min(int(os.getenv("REVIO_QUOTE_MAX_PAGE", "16384")), 100000))
+    page_cache: dict[int, tuple[dict, list[dict]]] = {}
+
+    async def get_page(page: int) -> tuple[dict, list[dict]]:
+        if page not in page_cache:
+            payload = await revio_psa_api_request(
+                "GET", path, params={"page": page, "pageSize": page_size}
+            )
+            page_cache[page] = (payload, revio_records(payload))
+        return page_cache[page]
+
+    first_payload, first_records = await get_page(1)
+    first_signature = revio_quote_page_signature(first_records)
+    last_page = revio_quote_page_count(first_payload, page_size)
+
+    cached_last_page = None
+    db = SessionLocal()
+    try:
+        cached = db.get(IntegrationSyncState, REVIO_QUOTE_LAST_PAGE_KEY)
+        if cached and cached.value:
+            try:
+                cached_last_page = max(1, int(cached.value))
+            except (TypeError, ValueError):
+                cached_last_page = None
+    finally:
+        db.close()
+
+    def page_is_distinct(records: list[dict]) -> bool:
+        signature = revio_quote_page_signature(records)
+        return bool(signature) and signature != first_signature
+
+    if last_page is None and cached_last_page and cached_last_page > 1:
+        _, cached_records = await get_page(cached_last_page)
+        if page_is_distinct(cached_records):
+            last_page = cached_last_page
+            for candidate in range(cached_last_page + 1, cached_last_page + 11):
+                _, records = await get_page(candidate)
+                if not page_is_distinct(records):
+                    break
+                last_page = candidate
+
+    if last_page is None:
+        _, second_records = await get_page(2)
+        if not page_is_distinct(second_records):
+            last_page = 1
+        else:
+            low = 2
+            high = 4
+            seen_signatures = {first_signature, revio_quote_page_signature(second_records)}
+            while high <= max_probe_page:
+                _, records = await get_page(high)
+                signature = revio_quote_page_signature(records)
+                if not signature or signature in seen_signatures:
+                    break
+                seen_signatures.add(signature)
+                low = high
+                high *= 2
+            high = min(high, max_probe_page)
+            while low + 1 < high:
+                middle = (low + high) // 2
+                _, records = await get_page(middle)
+                signature = revio_quote_page_signature(records)
+                if signature and signature != first_signature:
+                    low = middle
+                else:
+                    high = middle
+            last_page = low
+
+    db = SessionLocal()
+    try:
+        cached = db.get(IntegrationSyncState, REVIO_QUOTE_LAST_PAGE_KEY)
+        if cached:
+            cached.value = str(last_page)
+        else:
+            db.add(IntegrationSyncState(key=REVIO_QUOTE_LAST_PAGE_KEY, value=str(last_page)))
+        db.commit()
+    finally:
+        db.close()
+
     records_by_id: dict[str, dict] = {}
-    pages_checked = 0
-    for page in range(1, max_pages + 1):
-        payload = await revio_psa_api_request(
-            "GET", path, params={"page": page, "pageSize": page_size}
-        )
-        page_records = revio_records(payload)
-        pages_checked += 1
-        new_records = 0
+    first_recent_page = max(1, last_page - recent_pages + 1)
+    for page in range(last_page, first_recent_page - 1, -1):
+        _, page_records = await get_page(page)
         for item in page_records:
             quote_id = revio_quote_nested_value(item, "quoteId", "quote_id", "id")
             if quote_id in (None, ""):
                 continue
-            key = str(quote_id)
-            if key not in records_by_id:
-                new_records += 1
-            records_by_id[key] = item
-        if not page_records or new_records == 0:
-            break
-        if not revio_quote_page_has_more(payload, page, page_size, len(page_records)):
-            break
-    return list(records_by_id.values()), pages_checked
+            records_by_id[str(quote_id)] = item
+    return list(records_by_id.values()), len(page_cache), last_page
 
 
 async def enrich_revio_quote(quote_record: dict) -> dict:
@@ -989,7 +1072,7 @@ def revio_quote_intake_body(quote_record: dict) -> str:
 
 async def sync_revio_quote_approvals(force_quote_id: str | None = None) -> dict:
     if not revio_configured():
-        return {"checked": 0, "approved": 0, "imported": 0, "baselined": 0, "pages": 0, "configured": False}
+        return {"checked": 0, "approved": 0, "imported": 0, "baselined": 0, "pages": 0, "last_page": 0, "configured": False}
     force_quote_id = str(force_quote_id or "").strip() or None
     if force_quote_id:
         path = os.getenv("REVIO_QUOTE_PATH", "/billing/api/v1/quotes").rstrip("/")
@@ -999,8 +1082,9 @@ async def sync_revio_quote_approvals(force_quote_id: str | None = None) -> dict:
         detail = payload.get("data", payload) if isinstance(payload, dict) else payload
         raw_quotes = [detail] if isinstance(detail, dict) else []
         pages_checked = 1
+        last_page = 0
     else:
-        raw_quotes, pages_checked = await fetch_revio_quotes()
+        raw_quotes, pages_checked, last_page = await fetch_revio_quotes()
     quote_records = [
         normalized for normalized in (normalize_revio_quote(item) for item in raw_quotes)
         if normalized is not None
@@ -1087,7 +1171,7 @@ async def sync_revio_quote_approvals(force_quote_id: str | None = None) -> dict:
             "checked": len(quote_records),
             "approved": sum(1 for item in quote_records if item["is_approved"]),
             "imported": imported, "baselined": baselined,
-            "pages": pages_checked, "configured": True,
+            "pages": pages_checked, "last_page": last_page, "configured": True,
         }
     finally:
         db.close()
