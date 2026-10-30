@@ -1,5 +1,7 @@
 import os
 import unittest
+from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import main
@@ -88,6 +90,33 @@ class OrderGraphCredentialTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/mailFolders/inbox/childFolders", second_url)
         third_url = client.get.await_args_list[2].args[0]
         self.assertIn("/mailFolders/orders-id/messages", third_url)
+
+    def test_rich_notification_contains_available_proposal_context(self):
+        notification = SimpleNamespace(
+            customer_name="ABC & Company",
+            mailbox="matthew@bullfrog.net",
+            received_at=datetime(2026, 10, 30, 20, 23, 39),
+            source_sender_name="DocuSign",
+            source_sender_email="completed@docusign.net",
+            subject='"ABC & Company" document has been completed by all participants',
+            source_body="All participants completed the proposal. Envelope 12345.",
+            has_attachments=True,
+        )
+        attachments = [{
+            "name": "Signed Proposal.pdf",
+            "contentType": "application/pdf",
+            "size": 2048,
+            "isInline": False,
+        }]
+
+        body = main.signed_proposal_notification_body(notification, attachments)
+
+        self.assertIn("ABC &amp; Company", body)
+        self.assertIn("Matthew Petrusha", body)
+        self.assertIn("completed@docusign.net", body)
+        self.assertIn("Signed Proposal.pdf", body)
+        self.assertIn("2.0 KB", body)
+        self.assertIn("Envelope 12345", body)
 
 
 if __name__ == "__main__":
