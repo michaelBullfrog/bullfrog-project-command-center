@@ -108,14 +108,14 @@ PHASE_TEMPLATES = {
     "Webex Calling": [
         {"name": "Planning & Handoff", "owner": "csm", "milestones": ["Signed Proposal", "Internal Handoff", "Kickoff Call"]},
         {"name": "Design & Discovery", "owner": "engineer", "milestones": ["Call Flow", "User Spreadsheet", "LOA Document"]},
-        {"name": "Hardware & Provisioning", "owner": "engineer", "milestones": ["Hardware Payment Check", "Hardware Ordered", "Hardware Delivered", "Devices Registered", "Users Added"]},
+        {"name": "Hardware & Provisioning", "owner": "engineer", "milestone_owners": {"Hardware Payment Check": "csm", "Hardware Ordered": "csm"}, "milestones": ["Hardware Payment Check", "Hardware Ordered", "Hardware Delivered", "Devices Registered", "Users Added"]},
         {"name": "Number Porting", "owner": "engineer", "milestones": ["Customer CNAM Obtained", "Port Submitted", "FOC Received", "Port Complete"]},
         {"name": "Go Live & Closeout", "owner": "csm", "milestones": ["Go Live Follow Up", "Go Live", "Closeout"]},
     ],
     "Webex Calling + E-Fax": [
         {"name": "Planning & Handoff", "owner": "csm", "milestones": ["Signed Proposal", "Internal Handoff", "Kickoff Call"]},
         {"name": "Design & Discovery", "owner": "engineer", "milestones": ["Call Flow", "User Spreadsheet", "LOA Document"]},
-        {"name": "Hardware & Provisioning", "owner": "engineer", "milestones": ["Hardware Payment Check", "Hardware Ordered", "Hardware Delivered", "Devices Registered", "Users Added"]},
+        {"name": "Hardware & Provisioning", "owner": "engineer", "milestone_owners": {"Hardware Payment Check": "csm", "Hardware Ordered": "csm"}, "milestones": ["Hardware Payment Check", "Hardware Ordered", "Hardware Delivered", "Devices Registered", "Users Added"]},
         {"name": "Number Porting", "owner": "engineer", "milestones": ["Customer CNAM Obtained", "Port Submitted", "FOC Received", "Port Complete"]},
         {"name": "E-Fax", "owner": "engineer", "milestones": ["E-Fax Requirements Confirmed", "E-Fax Number Inventory Complete", "E-Fax Port Submitted", "E-Fax Provisioned", "E-Fax Testing Complete", "E-Fax Training Complete"]},
         {"name": "Go Live & Closeout", "owner": "csm", "milestones": ["Go Live Follow Up", "Go Live", "Closeout"]},
@@ -4354,7 +4354,7 @@ def home(request: Request):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-attachments-v2", "email_intake_subject": "New Project", "milestone_owner_display": True}
+    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-attachments-v2", "email_intake_subject": "New Project", "milestone_owner_display": True, "milestone_owner_rules_version": 2}
 
 
 @app.post("/api/webhooks/revio-billing/{token}")
@@ -5293,14 +5293,14 @@ def create_project(payload: ProjectCreate, request: Request, db: Session = Depen
     return db.scalar(project_query().where(Project.id == project.id))
 
 def project_detail_output(project: Project, db: Session) -> ProjectOut:
-    """Resolve display ownership using the same phase roles as Rev PSA creation."""
+    """Resolve milestone responsibility, falling back to the configured phase role."""
     output = ProjectOut.model_validate(project)
     phases = project_phase_definitions(project.project_type, db)
     for milestone in output.milestones:
         phase = next((p for p in phases if p["name"] == milestone.phase_name), None)
         if phase is None and not milestone.phase_name:
             phase = next((p for p in phases if milestone.name in p["milestones"]), None)
-        role = phase.get("owner") if phase else None
+        role = phase.get("milestone_owners", {}).get(milestone.name, phase.get("owner")) if phase else None
         if role in ("csm", "engineer", "sales"):
             milestone.owner_role = role
             milestone.owner_name = work_item_assignee(project, role)

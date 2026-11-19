@@ -32,3 +32,14 @@ def test_custom_sales_phase_and_legacy_phase_fallback(db):
     assert result.milestones[0].owner_name=='Matt' and result.milestones[0].owner_role=='sales'
     p.sales_owner=None;db.commit()
     assert main.get_project(p.id,db).milestones[0].owner_name=='Ryan'
+
+
+@pytest.mark.parametrize('project_type',['Webex Calling','Webex Calling + E-Fax'])
+def test_hardware_payment_and_ordered_use_current_csm(db,project_type):
+    p=Project(customer='Synthetic',project_name='Hardware test',project_type=project_type,technical_manager='Chad',engineer='Zach')
+    names=['Hardware Payment Check','Hardware Ordered','Hardware Delivered','Devices Registered','Users Added']
+    p.milestones=[Milestone(name=name,phase_name='Hardware & Provisioning') for name in names]
+    db.add(p);db.commit()
+    assert [m.owner_name for m in main.get_project(p.id,db).milestones]==['Chad','Chad','Zach','Zach','Zach']
+    p.technical_manager='Ryan';db.commit()
+    assert [m.owner_name for m in main.get_project(p.id,db).milestones]==['Ryan','Ryan','Zach','Zach','Zach']
