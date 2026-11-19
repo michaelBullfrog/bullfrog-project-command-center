@@ -17,6 +17,8 @@ class MilestoneUpdate(BaseModel):
     due_date: date | None = None
 
 class MilestoneOut(MilestoneCreate):
+    owner_name: str | None = None
+    owner_role: str | None = None
     id: int
     project_id: int
     completed_date: date | None = None

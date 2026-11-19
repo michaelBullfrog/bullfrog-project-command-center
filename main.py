@@ -4354,7 +4354,7 @@ def home(request: Request):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-attachments-v2", "email_intake_subject": "New Project"}
+    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-attachments-v2", "email_intake_subject": "New Project", "milestone_owner_display": True}
 
 
 @app.post("/api/webhooks/revio-billing/{token}")
@@ -5292,12 +5292,27 @@ def create_project(payload: ProjectCreate, request: Request, db: Session = Depen
     db.commit()
     return db.scalar(project_query().where(Project.id == project.id))
 
+def project_detail_output(project: Project, db: Session) -> ProjectOut:
+    """Resolve display ownership using the same phase roles as Rev PSA creation."""
+    output = ProjectOut.model_validate(project)
+    phases = project_phase_definitions(project.project_type, db)
+    for milestone in output.milestones:
+        phase = next((p for p in phases if p["name"] == milestone.phase_name), None)
+        if phase is None and not milestone.phase_name:
+            phase = next((p for p in phases if milestone.name in p["milestones"]), None)
+        role = phase.get("owner") if phase else None
+        if role in ("csm", "engineer", "sales"):
+            milestone.owner_role = role
+            milestone.owner_name = work_item_assignee(project, role)
+    return output
+
+
 @app.get("/api/projects/{project_id}", response_model=ProjectOut)
 def get_project(project_id: int, db: Session = Depends(get_db)):
     project = db.scalar(project_query().where(Project.id == project_id))
     if not project:
         raise HTTPException(404, "Project not found")
-    return project
+    return project_detail_output(project, db)
 
 @app.put("/api/projects/{project_id}", response_model=ProjectOut)
 def update_project(project_id: int, payload: ProjectUpdate, request: Request, db: Session = Depends(get_db)):
