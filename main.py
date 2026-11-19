@@ -22,7 +22,7 @@ from sqlalchemy import inspect, or_, select, text, update
 from sqlalchemy.orm import Session, selectinload
 
 from database import Base, SessionLocal, engine, get_db
-from models import AutomationEvent, CustomProjectTemplate, CustomerContact, HardwareOrderWorkflow, IntegrationSyncState, IntakeEmail, Milestone, NoteAttachment, OrderFolderNotification, Project, ProjectActivity, ProjectNote, ProjectWorkItem, PsaTicketWorkflow, QuoteApprovalState
+from models import AutomationEvent, CustomProjectTemplate, CustomerContact, HardwareOrderWorkflow, IntegrationSyncState, IntakeEmail, IntakeAttachment, Milestone, NoteAttachment, OrderFolderNotification, Project, ProjectActivity, ProjectNote, ProjectWorkItem, PsaTicketWorkflow, QuoteApprovalState
 from schemas import (
     ContactCreate, ContactOut, ContactUpdate, IntakeConvert, IntakeEmailCreate, IntakeEmailOut,
     MilestoneCreate, MilestoneOut, MilestoneUpdate, NoteOut, ProjectCreate, ProjectOut, ProjectUpdate,
@@ -4347,7 +4347,7 @@ def home(request: Request):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-intake-v1"}
+    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-attachments-v2"}
 
 
 @app.post("/api/webhooks/revio-billing/{token}")
@@ -4793,7 +4793,7 @@ def dismiss_intake(intake_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/intake/{intake_id}/convert", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
 def convert_intake(intake_id: int, payload: IntakeConvert, request: Request, db: Session = Depends(get_db)):
-    item = db.get(IntakeEmail, intake_id)
+    item = db.scalar(select(IntakeEmail).where(IntakeEmail.id == intake_id).with_for_update())
     if not item:
         raise HTTPException(404, "Intake email not found")
     if item.status != "Pending":
@@ -4809,6 +4809,8 @@ def convert_intake(intake_id: int, payload: IntakeConvert, request: Request, db:
         db, project.id, request, "project_created",
         f"Created project from email intake: {item.subject}",
     )
+    from sales_intake import promote_attachments
+    promote_attachments(db, item, project)
     item.status = "Converted"
     item.project_id = project.id
     db.commit()
@@ -5604,6 +5606,16 @@ def add_note(
         .options(selectinload(ProjectNote.attachments))
         .where(ProjectNote.id == item.id)
     )
+
+@app.get("/api/intake/attachments/{attachment_id}")
+def download_intake_attachment(attachment_id: int, db: Session = Depends(get_db)):
+    attachment = db.get(IntakeAttachment, attachment_id)
+    if not attachment:
+        raise HTTPException(404, "Attachment not found")
+    return Response(content=attachment.data, media_type="application/octet-stream",
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(attachment.filename, safe=""),
+                 "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
+
 
 @app.get("/api/attachments/{attachment_id}")
 def download_attachment(attachment_id: int, db: Session = Depends(get_db)):

@@ -213,6 +213,7 @@ class IntakeEmailCreate(BaseModel):
     received_at: datetime | None = None
 
 class IntakeEmailOut(IntakeEmailCreate):
+    attachments: list[AttachmentOut] = []
     sales_details: dict | None = None
     id: int
     status: str

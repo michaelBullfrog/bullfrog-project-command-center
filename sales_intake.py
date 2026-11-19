@@ -8,10 +8,11 @@ from fastapi import Depends, HTTPException, Request
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from models import IntakeEmail
+from models import IntakeEmail, IntakeAttachment, ProjectNote, NoteAttachment
+from intake_uploads import read_submission, manifest
 from sales_intake_contract import SalesSubmission
 
-VERSION = '2026-11-19-sales-intake-v1'
+VERSION = '2026-11-19-sales-attachments-v2'
 
 
 def allowed_email(value):
@@ -26,8 +27,10 @@ def receipt(item):
         'submission_id': item.message_id.rsplit(':', 1)[-1]}
 
 
-def content_hash(payload):
+def content_hash(payload, uploads=()):
     content = {'submitter_email': payload.submitter.email.lower(), 'details': payload.details.model_dump(mode='json')}
+    if uploads:
+        content["attachments"] = manifest(uploads)
     return hashlib.sha256(json.dumps(content, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
@@ -65,21 +68,16 @@ def install_routes(app, require_token, lookup_customer, get_options, get_db):
 
     @app.post('/api/mcp/sales-intake', dependencies=[Depends(require_token)])
     async def sales_submit(request: Request, db=Depends(get_db)):
-        raw, size = [], 0
-        async for chunk in request.stream():
-            size += len(chunk)
-            if size > 40000:
-                raise HTTPException(413, 'Submission is too large.')
-            raw.append(chunk)
+        raw, uploads = await read_submission(request)
         try:
-            payload = SalesSubmission.model_validate_json(b''.join(raw))
+            payload = SalesSubmission.model_validate_json(raw)
         except ValidationError as exc:
             raise HTTPException(422, detail=[{'loc': e['loc'], 'msg': e['msg']} for e in exc.errors()])
         if not allowed_email(payload.submitter.email):
             raise HTTPException(403, 'A Bullfrog staff submitter is required.')
         email = payload.submitter.email.lower()
         key = 'sales-portal:' + email + ':' + str(payload.submission_id)
-        fingerprint = content_hash(payload)
+        fingerprint = content_hash(payload, uploads)
 
         def previous():
             item = db.scalar(select(IntakeEmail).where(IntakeEmail.message_id == key))
@@ -120,6 +118,8 @@ def install_routes(app, require_token, lookup_customer, get_options, get_db):
             subject=('Sales request: ' + details.project_name)[:500], body=body,
             sales_details_json=details.model_dump_json(), submission_hash=fingerprint,
             received_at=datetime.utcnow(), status='Pending', project_id=None)
+        for upload in uploads:
+            item.attachments.append(IntakeAttachment(**upload))
         db.add(item)
         try:
             db.commit()
@@ -131,3 +131,16 @@ def install_routes(app, require_token, lookup_customer, get_options, get_db):
                 return existing
             raise HTTPException(409, 'The submission could not be saved; retry with the same reference.')
         return receipt(item)
+
+
+def promote_attachments(db, item, project):
+    """Move files within the project conversion transaction; rollback preserves intake."""
+    if not item.attachments:
+        return
+    note = ProjectNote(project_id=project.id, author=(item.sender_name or item.sender_email or 'Sales intake')[:100],
+        note=f"Documents submitted by {item.sender_email or 'sales'} with PCC-INTAKE-{item.id}.")
+    for upload in list(item.attachments):
+        note.attachments.append(NoteAttachment(filename=upload.filename, content_type=upload.content_type,
+            size_bytes=upload.size_bytes, data=upload.data))
+        item.attachments.remove(upload)
+    db.add(note)

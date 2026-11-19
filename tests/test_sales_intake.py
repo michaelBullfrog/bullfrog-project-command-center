@@ -124,3 +124,79 @@ def test_existing_review_conversion_remains_the_only_project_creation_step(site)
         result=main.convert_intake(created['intake_id'],IntakeConvert(project=ProjectCreate(customer='Synthetic Customer',customer_id='1005',project_name='Reviewed project',project_type='Other')),request,db)
         assert result.id and db.get(IntakeEmail,created['intake_id']).status=='Converted'
         assert db.scalar(select(func.count()).select_from(Project))==1
+
+
+def test_upload_retry_and_promotion_are_atomic(site):
+    from models import IntakeAttachment, ProjectNote, NoteAttachment
+    from sales_intake import promote_attachments
+    client,factory,_=site
+    body=payload()
+    def send(data=b"%PDF-synthetic", name="../proposal.pdf"):
+        return client.post(BASE, headers=AUTH, data={'payload':json.dumps(body)}, files=[('files',(name,data,'text/html'))])
+    r=send();assert r.status_code==200, r.text
+    ident=r.json()['intake_id']
+    assert send().json()['intake_id']==ident
+    assert send(b'%PDF-changed').status_code==409
+    with factory() as db:
+        item=db.get(IntakeEmail,ident)
+        meta=IntakeEmailOut.model_validate(item).model_dump()['attachments']
+        assert meta[0]['filename']=='proposal.pdf' and meta[0]['content_type']=='application/pdf'
+        assert 'data' not in meta[0]
+        project=Project(customer='Synthetic',project_name='Upload test',project_type='Other')
+        db.add(project);db.flush()
+        promote_attachments(db,item,project)
+        db.flush()
+        assert db.scalar(select(func.count(NoteAttachment.id)))==1
+        db.rollback()
+    with factory() as db:
+        item=db.get(IntakeEmail,ident)
+        assert len(item.attachments)==1 and item.status=='Pending'
+        assert db.scalar(select(func.count(ProjectNote.id)))==0
+        project=Project(customer='Synthetic',project_name='Upload test',project_type='Other')
+        db.add(project);db.flush();pid=project.id
+        promote_attachments(db,item,project)
+        item.status='Converted';item.project_id=pid;db.commit()
+        assert db.scalar(select(func.count(IntakeAttachment.id)))==0
+        attachment=db.scalar(select(NoteAttachment))
+        assert attachment.data==b'%PDF-synthetic'
+        assert db.scalar(select(ProjectNote)).author=='Synthetic Sales'
+        promote_attachments(db,item,project);db.commit()
+        assert db.scalar(select(func.count(NoteAttachment.id)))==1
+    assert send().json()['status']=='Converted'
+
+
+@pytest.mark.parametrize('files,status',[
+    ([('bad.exe',b'no')],415),([('blank.pdf',b'')],422),
+    ([('big.pdf',b'x'*(10*1024*1024+1))],413),
+    ([('part.pdf',b'x')]*6,400),
+])
+def test_invalid_files_never_save_partial_intake(site,files,status):
+    client,factory,_=site
+    r=client.post(BASE,headers=AUTH,data={'payload':json.dumps(payload())},files=[('files',(n,d)) for n,d in files])
+    assert r.status_code==status,r.text
+    with factory() as db:
+        assert db.scalar(select(func.count(IntakeEmail.id)))==0
+
+
+def test_real_conversion_moves_attachments_and_downloads_remain_private(site,monkeypatch):
+    import main
+    from models import NoteAttachment
+    from schemas import IntakeConvert,ProjectCreate
+    client,factory,_=site
+    created=client.post(BASE,headers=AUTH,data={'payload':json.dumps(payload())},files=[('files',('scope.txt',b'Customer scope'))]).json()
+    with factory() as db:
+        aid=db.get(IntakeEmail,created['intake_id']).attachments[0].id
+        download=main.download_intake_attachment(aid,db)
+        assert download.body==b'Customer scope'
+        assert download.headers['cache-control']=='no-store'
+        req=Request({'type':'http','method':'POST','path':'/review','headers':[],'session':{'user':{'name':'Reviewer'}}})
+        result=main.convert_intake(created['intake_id'],IntakeConvert(project=ProjectCreate(customer='Synthetic',project_name='Reviewed',project_type='Other')),req,db)
+        assert len(result.notes)==1 and result.notes[0].attachments[0].filename=='scope.txt'
+        assert main.download_attachment(result.notes[0].attachments[0].id,db).body==b'Customer scope'
+        with pytest.raises(HTTPException) as gone:main.download_intake_attachment(aid,db)
+        assert gone.value.status_code==404
+        with pytest.raises(HTTPException) as duplicate:main.convert_intake(created['intake_id'],IntakeConvert(project=ProjectCreate(customer='Synthetic',project_name='Reviewed',project_type='Other')),req,db)
+        assert duplicate.value.status_code==409
+    monkeypatch.setattr(main,'webex_oauth_configured',lambda:True)
+    with TestClient(main.app) as staff:
+        assert staff.get('/api/intake/attachments/'+str(aid)).status_code==401

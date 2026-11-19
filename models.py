@@ -295,6 +295,9 @@ class IntakeEmail(Base):
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
+    attachments: Mapped[list["IntakeAttachment"]] = relationship(
+        back_populates="intake", cascade="all, delete-orphan", order_by="IntakeAttachment.id")
+
     @property
     def sales_details(self):
         import json
@@ -305,3 +308,13 @@ class IntakeEmail(Base):
             return None
 
 
+
+class IntakeAttachment(Base):
+    __tablename__ = "intake_attachments"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    intake_id: Mapped[int] = mapped_column(ForeignKey("intake_emails.id", ondelete="CASCADE"), index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(120))
+    size_bytes: Mapped[int]
+    data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    intake: Mapped[IntakeEmail] = relationship(back_populates="attachments")
