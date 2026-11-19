@@ -38,14 +38,14 @@ jobs:
               assert login.status_code == 200
 
               unauthorized = client.post("/api/intake/email", json={
-                  "message_id": "ci-message-1", "subject": "CI project request"
+                  "message_id": "ci-message-1", "subject": "New Project"
               })
               assert unauthorized.status_code == 401
 
               received = client.post("/api/intake/email", headers={
                   "X-Intake-Secret": "test-intake-secret-for-ci-only"
               }, json={
-                  "message_id": "ci-message-1", "subject": "CI project request",
+                  "message_id": "ci-message-1", "subject": "New Project",
                   "sender_email": "sales@example.com", "body": "Test request"
               })
               assert received.status_code == 201
@@ -54,9 +54,15 @@ jobs:
               duplicate = client.post("/api/intake/email", headers={
                   "X-Intake-Secret": "test-intake-secret-for-ci-only"
               }, json={
-                  "message_id": "ci-message-1", "subject": "CI project request"
+                  "message_id": "ci-message-1", "subject": "New Project"
               })
               assert duplicate.status_code == 200
+
+              ignored = client.post("/api/intake/email", headers={
+                  "X-Intake-Secret": "test-intake-secret-for-ci-only"
+              }, json={"message_id": "ci-ignore-1", "subject": "RE: New Project"})
+              assert ignored.status_code == 200
+              assert ignored.json()["status"] == "ignored"
 
               validation = client.post("/api/graph/notifications?validationToken=graph-check")
               assert validation.status_code == 200

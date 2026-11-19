@@ -100,7 +100,7 @@ function renderIntake(){
   const received=item.received_at||item.created_at;
   const preview=plainEmailBody(item.body).slice(0,320);
   return '<article class="intake-card"><div class="intake-main"><div class="intake-meta"><span class="badge stage">Pending Review</span><span>'+safe(item.source_type||"Email")+'</span><span>'+new Date(received).toLocaleString()+'</span></div><h3>'+safe(item.subject)+'</h3><div class="item-sub">From: '+safe(item.sender_name||"Unknown sender")+(item.sender_email?' &lt;'+safe(item.sender_email)+'&gt;':'')+'</div><p>'+safe(preview||"No email body was provided.")+(preview.length>=320?"…":"")+'</p>'+attachmentLinks(item.attachments,'/api/intake/attachments/')+'</div><div class="intake-actions"><button class="primary" data-review-intake="'+item.id+'">Review & Create</button><button class="secondary danger" data-dismiss-intake="'+item.id+'">Dismiss</button></div></article>'
- }).join(""):'<div class="empty intake-empty"><strong>Inbox is clear.</strong><span>Sales submissions, completed quotes and messages sent through services@ will appear here for review.</span></div>';
+ }).join(""):'<div class="empty intake-empty"><strong>Inbox is clear.</strong><span>Sales submissions, completed quotes and emails to services@ with the subject New Project will appear here for review.</span></div>';
  $$("[data-review-intake]").forEach(x=>x.onclick=()=>openIntake(Number(x.dataset.reviewIntake)));
  $$("[data-dismiss-intake]").forEach(x=>x.onclick=async()=>{if(confirm("Dismiss this intake request?")){await api("/api/intake/"+x.dataset.dismissIntake+"/dismiss",{method:"PATCH"});await refresh();toast("Intake dismissed")}});
 }

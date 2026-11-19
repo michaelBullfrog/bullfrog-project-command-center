@@ -149,3 +149,7 @@ Project work items create and link Rev PSA tickets or calendar tasks to their ma
 ## Sales portal intake
 
 Sales requests from the Bullfrog portal appear in **Project Intake** as **Sales Portal / Pending Review**. Submission does not create a project. Existing Review & Create converts the request after review. See [sales intake](docs/sales-intake.md).
+
+
+### Services inbox subject filter
+Email intake from the configured `MS_INTAKE_MAILBOX` (services@bullfrog.net) accepts only the complete subject **New Project**, ignoring capitalization and surrounding whitespace. Replies, forwards, empty subjects and longer subjects are skipped. The filter applies to Graph notifications, Sync Inbox imports, and the authenticated email-intake webhook; skipped webhook requests receive HTTP 200 with `status: ignored`. Existing intake entries remain unchanged. Sales Portal submissions, quote intake, and Orders-folder monitoring use their own ingestion paths.

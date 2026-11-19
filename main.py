@@ -551,7 +551,14 @@ def graph_received_datetime(value: str | None) -> datetime | None:
     except ValueError:
         return None
 
+def is_project_intake_subject(subject: str | None) -> bool:
+    """Only explicit new-project emails enter intake; replies and forwards stay out."""
+    return isinstance(subject, str) and subject.strip().casefold() == "new project"
+
+
 def store_graph_message(db: Session, message: dict) -> bool:
+    if not is_project_intake_subject(message.get("subject")):
+        return False
     graph_id = str(message.get("id") or "").strip()
     internet_id = str(message.get("internetMessageId") or "").strip()
     unique_id = internet_id or graph_id
@@ -4347,7 +4354,7 @@ def home(request: Request):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-attachments-v2"}
+    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-attachments-v2", "email_intake_subject": "New Project"}
 
 
 @app.post("/api/webhooks/revio-billing/{token}")
@@ -4760,6 +4767,9 @@ def receive_intake_email(
         raise HTTPException(503, "Email intake is not configured")
     if not supplied_secret or not secrets.compare_digest(supplied_secret, configured_secret):
         raise HTTPException(401, "Invalid intake secret")
+
+    if not is_project_intake_subject(payload.subject):
+        return JSONResponse({"status": "ignored", "reason": "subject_not_new_project"}, status_code=200)
 
     existing = db.scalar(select(IntakeEmail).where(IntakeEmail.message_id == payload.message_id))
     if existing:
