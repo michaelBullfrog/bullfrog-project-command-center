@@ -213,6 +213,7 @@ class IntakeEmailCreate(BaseModel):
     received_at: datetime | None = None
 
 class IntakeEmailOut(IntakeEmailCreate):
+    sales_details: dict | None = None
     id: int
     status: str
     project_id: int | None = None

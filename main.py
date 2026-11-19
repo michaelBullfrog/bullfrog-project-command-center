@@ -991,6 +991,8 @@ def ensure_database_schema():
                 connection.execute(text(f"ALTER TABLE milestones ADD COLUMN {column_name} {column_type}"))
     intake_columns = {column["name"] for column in inspect(engine).get_columns("intake_emails")}
     intake_additions = {
+        "sales_details_json": "TEXT",
+        "submission_hash": "VARCHAR(64)",
         "source_type": "VARCHAR(40)",
         "customer_id": "VARCHAR(50)",
         "customer_name": "VARCHAR(255)",
@@ -4345,7 +4347,7 @@ def home(request: Request):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-intake-v1"}
 
 
 @app.post("/api/webhooks/revio-billing/{token}")
@@ -5615,3 +5617,8 @@ def download_attachment(attachment_id: int, db: Session = Depends(get_db)):
         media_type=attachment.content_type,
         headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded_name}"},
     )
+
+
+# Existing service authentication is checked independently on every intake route.
+from sales_intake import install_routes as install_sales_intake_routes
+install_sales_intake_routes(app, require_mcp_service_token, lookup_revio_customer, options, get_db)

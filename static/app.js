@@ -99,8 +99,8 @@ function renderIntake(){
  $("#intake-list").innerHTML=list.length?list.map(item=>{
   const received=item.received_at||item.created_at;
   const preview=plainEmailBody(item.body).slice(0,320);
-  return '<article class="intake-card"><div class="intake-main"><div class="intake-meta"><span class="badge stage">Pending Review</span><span>'+new Date(received).toLocaleString()+'</span></div><h3>'+safe(item.subject)+'</h3><div class="item-sub">From: '+safe(item.sender_name||"Unknown sender")+(item.sender_email?' &lt;'+safe(item.sender_email)+'&gt;':'')+'</div><p>'+safe(preview||"No email body was provided.")+(preview.length>=320?"…":"")+'</p></div><div class="intake-actions"><button class="primary" data-review-intake="'+item.id+'">Review & Create</button><button class="secondary danger" data-dismiss-intake="'+item.id+'">Dismiss</button></div></article>'
- }).join(""):'<div class="empty intake-empty"><strong>Inbox is clear.</strong><span>New messages sent through services@ will appear here for review.</span></div>';
+  return '<article class="intake-card"><div class="intake-main"><div class="intake-meta"><span class="badge stage">Pending Review</span><span>'+safe(item.source_type||"Email")+'</span><span>'+new Date(received).toLocaleString()+'</span></div><h3>'+safe(item.subject)+'</h3><div class="item-sub">From: '+safe(item.sender_name||"Unknown sender")+(item.sender_email?' &lt;'+safe(item.sender_email)+'&gt;':'')+'</div><p>'+safe(preview||"No email body was provided.")+(preview.length>=320?"…":"")+'</p></div><div class="intake-actions"><button class="primary" data-review-intake="'+item.id+'">Review & Create</button><button class="secondary danger" data-dismiss-intake="'+item.id+'">Dismiss</button></div></article>'
+ }).join(""):'<div class="empty intake-empty"><strong>Inbox is clear.</strong><span>Sales submissions, completed quotes and messages sent through services@ will appear here for review.</span></div>';
  $$("[data-review-intake]").forEach(x=>x.onclick=()=>openIntake(Number(x.dataset.reviewIntake)));
  $$("[data-dismiss-intake]").forEach(x=>x.onclick=async()=>{if(confirm("Dismiss this intake request?")){await api("/api/intake/"+x.dataset.dismissIntake+"/dismiss",{method:"PATCH"});await refresh();toast("Intake dismissed")}});
 }
@@ -108,7 +108,8 @@ function openIntake(id){
  const item=state.intake.find(x=>x.id===id);if(!item)return;
  const sender=[item.sender_name,item.sender_email].filter(Boolean).join(" — ");
  const body=plainEmailBody(item.body);
- openForm({customer:item.customer_name||"",customer_id:item.customer_id||"",project_name:item.quote_id?(item.customer_name||"New Customer")+" — New Project":item.subject,sales_owner:item.sales_owner||"",stage:"Intake",risk:"Green",priority:"Normal",scope:(sender?"Requested by "+sender+"\n\n":"")+body},id);
+ const sales=item.source_type==="Sales Portal"&&item.sales_details?item.sales_details:null;
+ openForm({customer:item.customer_name||"",customer_id:item.customer_id||"",...(sales?{quote_id:item.quote_id||"",project_type:sales.project_type,target_date:sales.requested_go_live||""}:{}),project_name:sales?sales.project_name:(item.quote_id?(item.customer_name||"New Customer")+" — New Project":item.subject),sales_owner:item.sales_owner||"",stage:"Intake",risk:"Green",priority:"Normal",scope:(sender?"Requested by "+sender+"\n\n":"")+body},id);
 }
 function renderTeam(){
  const groups={};active().forEach(p=>{const n=p.engineer||"Unassigned";(groups[n]??=[]).push(p)});

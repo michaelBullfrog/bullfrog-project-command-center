@@ -282,6 +282,8 @@ class IntakeEmail(Base):
     sender_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     sender_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     source_type: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    sales_details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    submission_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     customer_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
     customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     quote_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -292,3 +294,14 @@ class IntakeEmail(Base):
     status: Mapped[str] = mapped_column(String(30), default="Pending", index=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    @property
+    def sales_details(self):
+        import json
+        try:
+            value = json.loads(self.sales_details_json) if self.sales_details_json else None
+            return value if isinstance(value, dict) else None
+        except (ValueError, TypeError):
+            return None
+
+
