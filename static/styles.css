@@ -116,3 +116,5 @@ button:disabled{opacity:.72;cursor:wait}
 .milestone.done .milestone-owner{background:#f7f8f7}
 @media(max-width:900px){.milestone-meta{flex-wrap:wrap}.milestone-meta .milestone-schedule{min-width:0;white-space:normal}}
 @media(max-width:620px){.milestone-meta{grid-column:2;justify-self:start}.milestone-owner{min-width:90px}}
+
+.quote-handoff-panel{margin:12px 0 18px;border:1px solid #dce8da;border-radius:10px;padding:12px}.quote-handoff-panel summary{cursor:pointer;font-weight:700}.quote-handoff-row{display:grid;gap:4px;padding:10px 0;border-top:1px solid #edf1ed;overflow-wrap:anywhere}.quote-handoff-row small{color:#805329}.quote-handoff-row button{justify-self:start}

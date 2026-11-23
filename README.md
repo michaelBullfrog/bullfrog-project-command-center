@@ -153,3 +153,15 @@ Sales requests from the Bullfrog portal appear in **Project Intake** as **Sales 
 
 ### Services inbox subject filter
 Email intake from the configured `MS_INTAKE_MAILBOX` (services@bullfrog.net) accepts only the complete subject **New Project**, ignoring capitalization and surrounding whitespace. Replies, forwards, empty subjects and longer subjects are skipped. The filter applies to Graph notifications, Sync Inbox imports, and the authenticated email-intake webhook; skipped webhook requests receive HTTP 200 with `status: ignored`. Existing intake entries remain unchanged. Sales Portal submissions, quote intake, and Orders-folder monitoring use their own ingestion paths.
+
+
+## Quote approval emails to Sales
+The scheduled Rev PSA quote poll (default five minutes) now observes approval independently of the existing **Complete** quote intake import. A newly approved/accepted quote, or a quote first seen as Complete, prompts its verified sales owner to begin the internal handoff at https://mcp.bullfrog.net/submit-project. The message includes the quote ID, customer and Rev PSA customer ID, source status, description and source total. It uses the existing `PSA_NOTIFICATION_SENDER` (default projectintake@bullfrog.net) and Microsoft Graph mail connection.
+
+The first nonempty scheduled poll establishes a baseline: existing approvals do not send historical email. Exact-quote checks cannot establish this baseline. Previously unseen older approvals are also suppressed using approval timestamps and the baseline quote ID boundary. Open quotes observed after activation send on an approval transition. One notice is kept per quote, including across restarts and repeated polls. Approved/accepted/complete statuses use the existing Rev PSA approval classifier; pending approval is excluded.
+
+Verified recipients are Jack Harris → jack@bullfrog.net and Matthew/Matt Petrusha → matthew@bullfrog.net. Matching uses exact source owner names or the known mailbox, rather than substring matching. Missing, unknown or conflicting owner information creates a Blocked notice and sends no email; subsequent polls can resolve it when the source owner is corrected.
+
+**Project Intake → Quote approval emails to Sales** shows queued, sent, blocked and failed notices. Sent means Microsoft Graph accepted the request, not confirmed inbox delivery. A definitive mail-service rejection can be retried using **Retry rejected email**. A timeout, server error or interrupted send is **Needs review** and is never automatically resent: check the sender's Sent Items first. The staff-only `/api/revio/quote-handoffs` endpoint exposes the same metadata; mail bodies are not returned. Queueing does not create a project or submit the sales form, and does not change Rev PSA.
+
+Approval monitoring uses the existing recent-quote page window (`REVIO_QUOTE_RECENT_PAGES`, default 5 pages). Quotes outside the fetched window are not observed by this poll. No historical approval emails are backfilled automatically.

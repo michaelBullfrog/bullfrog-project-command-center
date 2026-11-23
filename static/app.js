@@ -196,7 +196,7 @@ async function refreshTemplates(){
  const [templates,options]=await Promise.all([api("/api/project-templates"),api("/api/options")]);state.templates=templates;state.options=options;fillOptions();renderTemplates();renderProjects()
 }
 function bindRows(){$$("[data-id]").forEach(el=>el.onclick=()=>openDetail(Number(el.dataset.id)))}
-async function loadIntake(){try{state.intake=await api("/api/intake");state.intakeError=null}catch(e){console.error("Project intake:",e);state.intake=[];state.intakeError=e.message}renderIntake()}
+async function loadIntake(){try{state.intake=await api("/api/intake");state.intakeError=null}catch(e){console.error("Project intake:",e);state.intake=[];state.intakeError=e.message}renderIntake();await loadQuoteHandoffs()}
 function setView(name){state.view=name;$$(".view").forEach(v=>v.classList.add("hidden"));const target=$("#"+name+"-view");if(!target){toast("This view is not available. Please refresh the page.");return}target.classList.remove("hidden");Array.from(document.querySelectorAll(".nav-link")).forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",intake:"Project Intake",team:"Team View",templates:"Project Types",automations:"Automation Center"}[name];if(name==="intake")loadIntake();if(name==="automations")loadAutomations()}
 function resetQuoteOptions(selectedId=""){
  const select=$("#quote-id-select"),statusEl=$("#quote-lookup-status");select.replaceChildren(new Option(selectedId?"Previously selected Rev.io source "+selectedId:"Search the customer to load quotes, bills, and charges",selectedId||""));select.disabled=true;statusEl.textContent="";statusEl.className="lookup-status";
@@ -403,3 +403,16 @@ if(testNotifications)testNotifications.onclick=async()=>{
 $$(".modal").forEach(m=>m.addEventListener("click",e=>{if(e.target===m)close(m.id)}));
 $("#today").textContent=new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"});
 load().catch(e=>{console.error(e);toast("Unable to load: "+e.message)});
+
+async function loadQuoteHandoffs(){
+ const box=$("#quote-handoff-status");if(!box)return;
+ try{const data=await api("/api/revio/quote-handoffs");box.replaceChildren();if(!data.mail_configured){const warning=document.createElement("p");warning.textContent="The Microsoft mail connection is not configured. Queued emails will wait for setup.";box.append(warning)}
+ if(!data.notices.length){const empty=document.createElement("p");empty.textContent=data.monitoring?"Monitoring new approvals. No handoff emails queued yet.":"The next scheduled quote check will establish the approval baseline.";box.append(empty);return}
+ for(const notice of data.notices){const row=document.createElement("div");row.className="quote-handoff-row";
+ const title=document.createElement("strong");title.textContent="Quote #"+notice.quote_id+" — "+(notice.customer_name||"Customer not returned");row.append(title);
+ const detail=document.createElement("span");detail.textContent=notice.status+(notice.recipient?" · "+notice.recipient:"")+(notice.sent_at?" · "+fmtTimestamp(notice.sent_at):"");row.append(detail);
+ if(notice.error){const error=document.createElement("small");error.textContent=notice.error;row.append(error)}
+ if(notice.status==="Failed"){const button=document.createElement("button");button.className="secondary compact";button.textContent="Retry rejected email";button.onclick=async()=>{button.disabled=true;try{await api("/api/revio/quote-handoffs/"+encodeURIComponent(notice.quote_id)+"/retry",{method:"POST"});await loadQuoteHandoffs()}catch(e){toast(e.message);button.disabled=false}};row.append(button)}
+ box.append(row)}
+ }catch(e){box.textContent="Email status unavailable: "+e.message}
+}

@@ -318,3 +318,19 @@ class IntakeAttachment(Base):
     size_bytes: Mapped[int]
     data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
     intake: Mapped[IntakeEmail] = relationship(back_populates="attachments")
+
+
+class QuoteHandoffNotice(Base):
+    __tablename__ = "quote_handoff_notices"
+    quote_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    status: Mapped[str] = mapped_column(String(30), default="Watching", index=True)
+    recipient: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    quote_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    subject: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    attempted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

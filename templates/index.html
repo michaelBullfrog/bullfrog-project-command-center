@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Bullfrog Project Command Center</title>
-  <link rel="stylesheet" href="/static/styles.css?v=1.14.5">
+  <link rel="stylesheet" href="/static/styles.css?v=1.14.6">
 </head>
 <body>
   <aside class="sidebar">
@@ -58,6 +58,7 @@
           <input id="approved-quote-id" class="hidden" inputmode="numeric" placeholder="Rev PSA Quote ID" aria-label="Rev PSA Quote ID">
           <div id="approved-quote-recent" class="approved-quote-recent hidden"></div>
         </div>
+        <details class="quote-handoff-panel"><summary>Quote approval emails to Sales</summary><p class="section-intro">New quote approvals prompt the sales owner to submit the internal handoff. Existing approvals are baselined.</p><div id="quote-handoff-status" aria-live="polite">Loading notification status…</div></details>
         <div id="intake-list" class="intake-list"></div>
       </article>
     </section>
@@ -172,6 +173,6 @@
     </div>
   </div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=1.18.7"></script>
+  <script src="/static/app.js?v=1.18.8"></script>
 </body>
 </html>

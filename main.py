@@ -22,7 +22,7 @@ from sqlalchemy import inspect, or_, select, text, update
 from sqlalchemy.orm import Session, selectinload
 
 from database import Base, SessionLocal, engine, get_db
-from models import AutomationEvent, CustomProjectTemplate, CustomerContact, HardwareOrderWorkflow, IntegrationSyncState, IntakeEmail, IntakeAttachment, Milestone, NoteAttachment, OrderFolderNotification, Project, ProjectActivity, ProjectNote, ProjectWorkItem, PsaTicketWorkflow, QuoteApprovalState
+from models import AutomationEvent, CustomProjectTemplate, CustomerContact, HardwareOrderWorkflow, IntegrationSyncState, IntakeEmail, IntakeAttachment, Milestone, NoteAttachment, OrderFolderNotification, Project, ProjectActivity, ProjectNote, ProjectWorkItem, PsaTicketWorkflow, QuoteApprovalState, QuoteHandoffNotice
 from schemas import (
     ContactCreate, ContactOut, ContactUpdate, IntakeConvert, IntakeEmailCreate, IntakeEmailOut,
     MilestoneCreate, MilestoneOut, MilestoneUpdate, NoteOut, ProjectCreate, ProjectOut, ProjectUpdate,
@@ -1413,7 +1413,7 @@ async def fetch_revio_quotes() -> tuple[list[dict], int, int]:
 
 async def enrich_revio_quote(quote_record: dict) -> dict:
     result = dict(quote_record)
-    if not result.get("customer_id") or not result.get("customer_name") or not result.get("quote_name"):
+    if not result.get("customer_id") or not result.get("customer_name") or not result.get("quote_name") or not result.get("sales_owner"):
         try:
             path = os.getenv("REVIO_QUOTE_PATH", "/billing/api/v1/quotes").rstrip("/")
             payload = await revio_psa_api_request(
@@ -1548,6 +1548,9 @@ async def sync_revio_quote_approvals(force_quote_id: str | None = None) -> dict:
                 value=json.dumps({"created_at": now.isoformat(), "quotes_seen": len(quote_records)}),
             ))
         db.commit()
+        from quote_handoff import observe_quotes, dispatch_pending
+        await observe_quotes(SessionLocal, quote_records, enrich_revio_quote, allow_baseline=force_quote_id is None)
+        await dispatch_pending(SessionLocal, graph_send_project_notification, configured=graph_configured())
         recent_quotes = revio_recent_quote_summaries(
             quote_records,
             minimum_quote_id=0 if force_quote_id else minimum_quote_id,
@@ -4354,7 +4357,7 @@ def home(request: Request):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-attachments-v2", "email_intake_subject": "New Project", "milestone_owner_display": True, "milestone_owner_rules_version": 2}
+    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-attachments-v2", "email_intake_subject": "New Project", "milestone_owner_display": True, "milestone_owner_rules_version": 2, "quote_handoff_email_version": 1}
 
 
 @app.post("/api/webhooks/revio-billing/{token}")
@@ -4733,6 +4736,25 @@ async def sync_order_monitor_now():
         raise HTTPException(502, f"Orders-folder check failed with status {exc.response.status_code}: {detail}")
     except (httpx.HTTPError, RuntimeError, ValueError, ZoneInfoNotFoundError) as exc:
         raise HTTPException(502, f"Orders-folder check failed: {exc}")
+
+
+@app.get("/api/revio/quote-handoffs")
+def quote_handoff_status(db: Session = Depends(get_db)):
+    from quote_handoff import summary
+    return {**summary(db), "mail_configured": graph_configured()}
+
+
+@app.post("/api/revio/quote-handoffs/{quote_id}/retry")
+async def retry_quote_handoff(quote_id: str, db: Session = Depends(get_db)):
+    from quote_handoff import dispatch_pending
+    # Only definitive mail rejections can be retried here, never ambiguous sends.
+    result = db.execute(update(QuoteHandoffNotice).where(QuoteHandoffNotice.quote_id == quote_id,
+        QuoteHandoffNotice.status == "Failed").values(status="Pending", error=None))
+    db.commit()
+    if result.rowcount != 1:
+        raise HTTPException(409, "Only a rejected, unsent email can be retried. Check the delivery status first.")
+    await dispatch_pending(SessionLocal, graph_send_project_notification, configured=graph_configured())
+    return quote_handoff_status(db)
 
 
 @app.post("/api/revio/quotes/sync-approved")
