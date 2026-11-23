@@ -1202,9 +1202,12 @@ def normalize_revio_quote(item: dict) -> dict | None:
             sales_owner = "Jack"
         elif "matt" in normalized_owner:
             sales_owner = "Matt"
+    from quote_assignees import billing_id
+    assigned_to = billing_id(item.get("assignedTo"))
     amount = revio_quote_nested_value(item, "total", "totalAmount", "total_amount", "amount")
     return {
         "quote_id": str(quote_id),
+        "assigned_to": assigned_to,
         "status_name": str(status_name or "Unknown"),
         "is_approved": is_approved,
         "is_complete": is_complete,
@@ -1309,6 +1312,10 @@ def revio_recent_quote_summaries(
             "customer_name": item.get("customer_name"),
             "quote_name": item.get("quote_name"),
             "sales_owner": item.get("sales_owner"),
+            "assigned_to": item.get("assigned_to"),
+            "assignee_name": (item.get("assigned_user") or {}).get("name"),
+            "assignee_email": (item.get("assigned_user") or {}).get("email"),
+            "assignee_error": item.get("assignee_error"),
             "status": item.get("status_name") or "Unknown",
             "amount": item.get("amount"),
             "updated_at": observed_at.isoformat() + "Z" if observed_at else None,
@@ -1425,10 +1432,15 @@ async def enrich_revio_quote(quote_record: dict) -> dict:
                 if normalized:
                     for key in (
                         "status_name", "approved_at", "customer_id", "customer_name",
-                        "quote_name", "sales_owner", "amount",
+                        "quote_name", "sales_owner", "amount", "assigned_to",
                     ):
                         if normalized.get(key) not in (None, "", "Unknown"):
                             result[key] = normalized[key]
+                    if "assignedTo" in detail:
+                        result["assigned_to"] = normalized.get("assigned_to") if normalized else None
+                        if result["assigned_to"] != quote_record.get("assigned_to"):
+                            result.pop("assigned_user", None)
+                            result.pop("assignee_error", None)
                     result["raw"] = detail
         except (httpx.HTTPError, RuntimeError, ValueError):
             logger.exception("Unable to load details for approved Rev PSA quote %s", result["quote_id"])
@@ -1439,6 +1451,9 @@ async def enrich_revio_quote(quote_record: dict) -> dict:
                 result["customer_name"] = customer["customer_name"]
         except (httpx.HTTPError, RuntimeError, ValueError):
             logger.exception("Unable to resolve customer for approved Rev PSA quote %s", result["quote_id"])
+    if result.get("assigned_to") and (result.get("assigned_to") != quote_record.get("assigned_to") or "assigned_user" not in result):
+        from quote_assignees import resolve_quote_assignees
+        await resolve_quote_assignees([result], revio_psa_api_request)
     return result
 
 
@@ -1453,6 +1468,9 @@ def revio_quote_intake_body(quote_record: dict) -> str:
         f"Status: {quote_record.get('status_name') or 'Complete'}",
         f"Sales Owner: {quote_record.get('sales_owner') or 'Not returned'}",
     ]
+    if quote_record.get("assigned_to"):
+        assignee = quote_record.get("assigned_user") or {}
+        lines.append(f"Assigned to: {assignee.get('name') or 'Unresolved'} (Billing User ID {quote_record['assigned_to']})")
     if quote_record.get("amount") not in (None, ""):
         lines.append(f"Quote Total: {quote_record['amount']}")
     if quote_record.get("approved_at"):
@@ -1480,6 +1498,8 @@ async def sync_revio_quote_approvals(force_quote_id: str | None = None) -> dict:
         normalized for normalized in (normalize_revio_quote(item) for item in raw_quotes)
         if normalized is not None
     ]
+    from quote_assignees import resolve_quote_assignees
+    await resolve_quote_assignees(quote_records, revio_psa_api_request)
     minimum_quote_id = revio_quote_min_id()
     db = SessionLocal()
     imported = 0
@@ -4357,7 +4377,7 @@ def home(request: Request):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-attachments-v2", "email_intake_subject": "New Project", "milestone_owner_display": True, "milestone_owner_rules_version": 2, "quote_handoff_email_version": 1}
+    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-attachments-v2", "email_intake_subject": "New Project", "milestone_owner_display": True, "milestone_owner_rules_version": 2, "quote_handoff_email_version": 2}
 
 
 @app.post("/api/webhooks/revio-billing/{token}")

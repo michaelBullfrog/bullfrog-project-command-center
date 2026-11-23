@@ -7,6 +7,7 @@ import httpx
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from models import IntegrationSyncState, QuoteHandoffNotice
+from quote_assignees import billing_id, staff_email
 
 BASELINE_KEY = 'quote_sales_handoff_baseline_v1'
 SUBMIT_URL = 'https://mcp.bullfrog.net/submit-project'
@@ -27,6 +28,12 @@ def owner_values(raw):
 
 
 def recipient_for(record):
+    assigned_value = record.get('assigned_to') or (record.get('raw') or {}).get('assignedTo')
+    assigned_to = billing_id(assigned_value)
+    if assigned_value not in (None,'',0,'0'):
+        if not assigned_to:return None
+        user = record.get('assigned_user') or {}
+        return staff_email(user.get('email')) if billing_id(user.get('billing_user_id')) == assigned_to else None
     names,emails=owner_values(record.get('raw') or {})
     matches = {SALES_MAILBOXES.get(re.sub(r'[^a-z0-9]','',str(name).lower())) for name in names}
     known_emails=set(SALES_MAILBOXES.values())
@@ -42,6 +49,9 @@ def message_for(record):
     details=[('Customer',customer),('Rev PSA Customer ID',record.get('customer_id') or 'Not returned'),
         ('Quote ID',quote_id),('Quote',record.get('quote_name') or 'Not returned'),
         ('Quote status',record.get('status_name') or 'Approved'),('Sales owner',record.get('sales_owner') or 'Not returned')]
+    if record.get('assigned_to'):
+        user=record.get('assigned_user') or {}
+        details.extend([('Assigned to',user.get('name') or 'Unresolved'),('Billing User ID',record['assigned_to'])])
     if record.get('amount') not in (None,''):
         details.append(('Source quote total',str(record['amount'])))
     rows=''.join('<tr><th align="left">'+html.escape(k)+'</th><td>'+html.escape(str(v))+'</td></tr>' for k,v in details)
@@ -82,17 +92,18 @@ async def observe_quotes(factory,records,enrich,*,allow_baseline=True,now=None):
                     notice.status='Baselined'
             if not record.get('is_approved') or notice.status not in ('Watching','Blocked'):
                 continue
+            source_assigned_to=record.get("assigned_to") or (record.get("raw") or {}).get("assignedTo")
             source_recipient=recipient_for(record)
             record=await enrich(record)
             notice.customer_name=str(record.get('customer_name') or '')[:255] or None
             notice.quote_name=str(record.get('quote_name') or '')[:500] or None
             notice.recipient=recipient_for(record)
-            if not any(owner_values(record.get('raw') or {})):
+            if not source_assigned_to and not record.get('assigned_to') and not (record.get('raw') or {}).get('assignedTo') and not any(owner_values(record.get('raw') or {})):
                 notice.recipient=source_recipient
             notice.subject,notice.body=message_for(record)
             notice.queued_at=notice.queued_at or now
             notice.status='Pending' if notice.recipient else 'Blocked'
-            notice.error=None if notice.recipient else 'Sales owner is missing, unrecognized, or conflicting; no email sent.'
+            notice.error=None if notice.recipient else record.get('assignee_error') or 'Quote assignee or sales owner is missing, unrecognized, or conflicting; no email sent.'
         if first:
             db.add(IntegrationSyncState(key=BASELINE_KEY,value=json.dumps(context)))
         try:db.commit()

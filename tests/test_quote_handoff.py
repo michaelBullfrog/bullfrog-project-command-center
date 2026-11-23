@@ -196,3 +196,15 @@ async def test_enrichment_cannot_turn_unknown_source_owner_into_guessed_recipien
     send=AsyncMock();await dispatch_pending(factory,send)
     send.assert_not_awaited()
     with factory() as db:assert db.get(QuoteHandoffNotice,'2000').status=='Blocked'
+
+@pytest.mark.asyncio
+async def test_assignment_removal_during_enrichment_does_not_restore_old_recipient(factory):
+    r=record();r['assigned_to']='2136';r['raw']={'assignedTo':2136}
+    r['assigned_user']={'billing_user_id':'2136','name':'Chad Pifer','email':'chad@bullfrog.net'}
+    await observe_quotes(factory,[r],enrich,now=NOW)
+    r['is_approved']=True
+    async def removed(r):return {**r,'assigned_to':None,'assigned_user':None,'raw':{'assignedTo':0}}
+    await observe_quotes(factory,[r],removed,now=NOW)
+    send=AsyncMock();await dispatch_pending(factory,send)
+    send.assert_not_awaited()
+    with factory() as db:assert db.get(QuoteHandoffNotice,'2000').status=='Blocked'
