@@ -26,5 +26,9 @@ function drag(id,targetName){const card=d.querySelector('[data-drag-project="'+i
  select(1,'Testing');await flush();await flush();assert.equal(projects[0].stage,'Testing');
  const count=calls.length;await planner.move(1,'Testing','Testing');assert.equal(calls.length,count);
  button('Gantt timeline').click();assert.equal(d.querySelectorAll('.planner-scroll').length,1);
+ for(let i=0;i<24;i++)projects.push({id:100+i,customer:'Extra '+i,project_name:'Scrollable project',stage:'Intake',milestones:[]});
+ planner.render();button('Stage board').click();const intake=[...d.querySelectorAll('.planner-board-lane')].find(el=>el.querySelector('h3').textContent.startsWith('Intake'));
+ assert.equal(intake.querySelectorAll('.planner-lane-body .planner-card').length,24);assert.match(intake.querySelector('.planner-lane-hint').textContent,/24/);assert.equal(intake.querySelector('.planner-lane-body').tabIndex,0);
+ button('Gantt timeline').click();const timeline=[...d.querySelectorAll('.planner-timeline-lane')].find(el=>el.getAttribute('aria-label')==='Intake timeline');assert.equal(timeline.querySelectorAll('.planner-lane-body [data-move-project]').length,24);
  console.log('Planner DOM: date boundaries, missing dates, phase rows, safe text, drag/drop, saved moves, stale errors, search, complete/reopen, and keyboard/touch menus passed');dom.window.close();
 })().catch(e=>{console.error(e);dom.window.close();process.exitCode=1});

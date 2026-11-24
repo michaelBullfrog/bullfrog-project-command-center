@@ -179,3 +179,5 @@ Gantt bars use the saved project start and target go-live dates. Expand a projec
 Search customer/project/engineer/CSM, include completed projects, choose 4 weeks / 3 months / 6 months, use Today and the navigation arrows, or Fit projects (up to two years). Board moves and Gantt moves update the same projects used everywhere else in the dashboard. Open a project name/bar for its full details.
 
 Validation: `python -m pytest -q tests/test_stage_moves.py` and `NODE_PATH=<jsdom modules> node tests/test_project_planner_ui.cjs`.
+
+Each stage section in both planner views shows approximately five project cards/rows at a time, with its own vertical scroll area for the remaining projects. Counts include every matching project, and section scroll positions are retained while updating the view.
