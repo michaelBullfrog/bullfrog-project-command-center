@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Bullfrog Project Command Center</title>
   <link rel="stylesheet" href="/static/styles.css?v=1.14.6">
+  <link rel="stylesheet" href="/static/project-planner.css?v=1">
 </head>
 <body>
   <aside class="sidebar">
@@ -12,6 +13,7 @@
     <nav>
       <button class="nav-link active" data-view="dashboard">▦ <span>Dashboard</span></button>
       <button class="nav-link" data-view="projects">☷ <span>Projects</span></button>
+      <button class="nav-link" data-view="planner">▤ <span>Timeline &amp; Stages</span></button>
       <button class="nav-link" data-view="intake">✉ <span>Project Intake</span><span class="nav-count hidden" id="intake-nav-count"></span></button>
       <button class="nav-link" data-view="team">♙ <span>Team View</span></button>
       <button class="nav-link" data-view="automations">↻ <span>Automations</span><span class="nav-count hidden" id="automation-nav-count"></span></button>
@@ -47,6 +49,12 @@
         </div>
         <div class="table-wrap"><table><thead><tr><th>Customer / Project</th><th>Engineer</th><th>Stage</th><th>Risk</th><th>Target</th><th>Next Action</th></tr></thead><tbody id="projects-table"></tbody></table></div>
       </article>
+    </section>
+
+    <section id="planner-view" class="view hidden">
+      <article class="panel"><div class="panel-head"><div><p class="eyebrow">PROJECT DELIVERY</p><h2>Timeline &amp; Stages</h2></div><span class="count-pill">Shared project stages</span></div>
+      <p class="section-intro">See planned dates across your projects. Drag projects between stage sections to save their current stage, or use Move to. Expand a project to see its dated milestone phases.</p>
+      <div id="project-planner"></div></article>
     </section>
 
     <section id="intake-view" class="view hidden">
@@ -173,6 +181,7 @@
     </div>
   </div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=1.18.9"></script>
+  <script src="/static/project-planner.js?v=1"></script>
+  <script src="/static/app.js?v=1.19.0"></script>
 </body>
 </html>

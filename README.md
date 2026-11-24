@@ -169,3 +169,13 @@ Approval monitoring uses the existing recent-quote page window (`REVIO_QUOTE_REC
 
 ### Quote assignee resolution
 Quote `assignedTo` is resolved against `GET /billing/api/v1/users` using **billingUserId**, not globalUserId. The verified active user's name and email are shown with recent quotes, and the handoff prompt goes to that assigned Bullfrog user (including a CSM if the quote is assigned to them). One user-directory read serves each quote poll. Missing, inactive, ambiguous or external-email assignees remain blocked; an unresolved assignedTo never falls back to a guessed sales owner. Name-based Jack/Matt mapping is retained only for quotes without an assignedTo ID. The existing approval baseline and sent-notice history are retained; this upgrade does not backfill old approvals or resend sent notices.
+
+
+## Timeline & Stages
+Open **Timeline & Stages** in the sidebar for a Gantt timeline grouped by the current project stage, or switch to **Stage board** for cards in stage columns. Drag a project bar/card into a different stage section, or use its **Move to…** menu (keyboard and touch supported). Moves save the shared Command Center stage immediately and record the signed-in staff member in Activity History. A stage-only write with an expected prior stage rejects conflicting concurrent changes.
+
+Gantt bars use the saved project start and target go-live dates. Expand a project with **+** to see milestone phases using their saved start, end and due dates. Missing schedules remain visibly unscheduled; one-sided dates are markers, and reversed dates are flagged for correction. The chart groups by **current** stage and shows planned schedules; it does not fabricate stage history or dates. Dragging between stages does not reschedule projects, complete milestones, or change Rev PSA statuses.
+
+Search customer/project/engineer/CSM, include completed projects, choose 4 weeks / 3 months / 6 months, use Today and the navigation arrows, or Fit projects (up to two years). Board moves and Gantt moves update the same projects used everywhere else in the dashboard. Open a project name/bar for its full details.
+
+Validation: `python -m pytest -q tests/test_stage_moves.py` and `NODE_PATH=<jsdom modules> node tests/test_project_planner_ui.cjs`.

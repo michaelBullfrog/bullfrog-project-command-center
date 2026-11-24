@@ -4377,7 +4377,7 @@ def home(request: Request):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-attachments-v2", "email_intake_subject": "New Project", "milestone_owner_display": True, "milestone_owner_rules_version": 2, "quote_handoff_email_version": 2}
+    return {"status": "ok", "sales_intake_version": "2026-11-19-sales-attachments-v2", "email_intake_subject": "New Project", "milestone_owner_display": True, "milestone_owner_rules_version": 2, "quote_handoff_email_version": 2, "project_planner_version": 1}
 
 
 @app.post("/api/webhooks/revio-billing/{token}")
@@ -5373,6 +5373,14 @@ def update_project(project_id: int, payload: ProjectUpdate, request: Request, db
             )
     db.commit()
     return db.scalar(project_query().where(Project.id == project_id))
+
+from stage_moves import StageMove, move_project_stage
+
+@app.patch("/api/projects/{project_id}/stage", response_model=ProjectOut)
+def change_project_stage(project_id: int, payload: StageMove, request: Request, db: Session = Depends(get_db)):
+    project = move_project_stage(db, project_id, payload, request, STAGES, record_activity)
+    return db.scalar(project_query().where(Project.id == project.id))
+
 
 @app.delete("/api/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_project(project_id: int, db: Session = Depends(get_db)):

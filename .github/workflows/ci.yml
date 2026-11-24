@@ -21,7 +21,9 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m compileall -q .
       - name: Validate browser JavaScript
-        run: node --check static/app.js
+        run: |
+          node --check static/app.js
+          node --check static/project-planner.js
       - name: Test application startup and authentication routing
         run: |
           python - <<'PY'

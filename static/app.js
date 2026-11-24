@@ -1,4 +1,5 @@
 const state={projects:[],intake:[],templates:[],automations:null,automationError:null,intakeError:null,options:{},revioProjectOptions:{statuses:[],priorities:[],member_roles:[]},revioProjectOptionsError:null,view:"dashboard",detailId:null};
+let projectPlanner=null;
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const fmtDate=v=>v?new Date(v+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"Not set";
 const fmtTimestamp=v=>v?new Date(v+(String(v).endsWith("Z")?"":"Z")).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}):"Not yet";
@@ -72,7 +73,7 @@ function fillOptions(){
   $("#revio-project-status").className="lookup-status span-2 error";
  }
 }
-function renderAll(){renderDashboard();renderProjects();renderTeam();renderTemplates();renderAutomations();bindRows()}
+function renderAll(){projectPlanner?.render();renderDashboard();renderProjects();renderTeam();renderTemplates();renderAutomations();bindRows()}
 function renderDashboard(){
  const list=active(), reds=list.filter(p=>p.risk==="Red").length, yellows=list.filter(p=>p.risk==="Yellow").length;
  const overdue=list.filter(isOverdue).length;
@@ -197,7 +198,7 @@ async function refreshTemplates(){
 }
 function bindRows(){$$("[data-id]").forEach(el=>el.onclick=()=>openDetail(Number(el.dataset.id)))}
 async function loadIntake(){try{state.intake=await api("/api/intake");state.intakeError=null}catch(e){console.error("Project intake:",e);state.intake=[];state.intakeError=e.message}renderIntake();await loadQuoteHandoffs()}
-function setView(name){state.view=name;$$(".view").forEach(v=>v.classList.add("hidden"));const target=$("#"+name+"-view");if(!target){toast("This view is not available. Please refresh the page.");return}target.classList.remove("hidden");Array.from(document.querySelectorAll(".nav-link")).forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",intake:"Project Intake",team:"Team View",templates:"Project Types",automations:"Automation Center"}[name];if(name==="intake")loadIntake();if(name==="automations")loadAutomations()}
+function setView(name){state.view=name;$$(".view").forEach(v=>v.classList.add("hidden"));const target=$("#"+name+"-view");if(!target){toast("This view is not available. Please refresh the page.");return}target.classList.remove("hidden");Array.from(document.querySelectorAll(".nav-link")).forEach(n=>n.classList.toggle("active",n.dataset.view===name));$("#page-title").textContent={dashboard:"Project Command Center",projects:"All Projects",intake:"Project Intake",planner:"Timeline & Stages",team:"Team View",templates:"Project Types",automations:"Automation Center"}[name];if(name==="planner")projectPlanner?.render();if(name==="intake")loadIntake();if(name==="automations")loadAutomations()}
 function resetQuoteOptions(selectedId=""){
  const select=$("#quote-id-select"),statusEl=$("#quote-lookup-status");select.replaceChildren(new Option(selectedId?"Previously selected Rev.io source "+selectedId:"Search the customer to load quotes, bills, and charges",selectedId||""));select.disabled=true;statusEl.textContent="";statusEl.className="lookup-status";
 }
@@ -402,6 +403,10 @@ if(testNotifications)testNotifications.onclick=async()=>{
 ["search","filter-stage","filter-risk","filter-type"].forEach(id=>$("#"+id).addEventListener(id==="search"?"input":"change",()=>{renderProjects();bindRows()}));
 $$(".modal").forEach(m=>m.addEventListener("click",e=>{if(e.target===m)close(m.id)}));
 $("#today").textContent=new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"});
+projectPlanner=window.BullfrogPlanner?.create($("#project-planner"),{
+ projects:()=>state.projects,stages:()=>state.options.stages||[],open:id=>openDetail(id),refresh,
+ save:(id,stage,expected)=>api("/api/projects/"+id+"/stage",{method:"PATCH",body:JSON.stringify({stage,expected_stage:expected})})
+});
 load().catch(e=>{console.error(e);toast("Unable to load: "+e.message)});
 
 async function loadQuoteHandoffs(){
