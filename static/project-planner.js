@@ -44,7 +44,7 @@
   function plot(range,p,width,child=false){const track=node('div',undefined,'planner-track');track.style.width=width+'px';track.style.setProperty('--tick-width',(7*width/horizon)+'px');
    const t=today();if(t>=origin&&t<origin+horizon){const line=node('span',undefined,'planner-today-line');line.style.left=((t-origin)*width/horizon)+'px';line.setAttribute('aria-hidden','true');track.append(line)}
    if(!range||range.invalid){track.append(node('span',range?.invalid?'Check dates: end precedes start':child?'No phase dates':'Schedule not set','planner-no-date'));return track}
-   const description=(range.point?range.kind+' only: ':'')+label(range.start)+(range.end!==range.start?' – '+label(range.end):'');
+   const description=(range.point?(child&&range.kind==='Go-live'?'Due':range.kind)+' only: ':'')+label(range.start)+(range.end!==range.start?' – '+label(range.end):'');
    if(range.end<origin||range.start>=origin+horizon){track.append(node('span','Outside view · '+description,'planner-no-date'));return track}
    const left=Math.max(origin,range.start),right=Math.min(origin+horizon-1,range.end),bar=node(child?'span':'button',undefined,'planner-bar '+color(p)+(range.point?' point':'')+(child?' phase-bar':''));
    const completion=child?null:(p.milestones||[]).length?Math.round(p.milestones.filter(m=>m.status==='Complete').length/p.milestones.length*100):null;
