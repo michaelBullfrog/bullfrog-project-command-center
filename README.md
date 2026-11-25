@@ -181,3 +181,5 @@ Search customer/project/engineer/CSM, include completed projects, choose 4 weeks
 Validation: `python -m pytest -q tests/test_stage_moves.py` and `NODE_PATH=<jsdom modules> node tests/test_project_planner_ui.cjs`.
 
 Each stage section in both planner views shows approximately five project cards/rows at a time, with its own vertical scroll area for the remaining projects. Counts include every matching project, and section scroll positions are retained while updating the view.
+
+The Stage Board stacks stage sections vertically rather than requiring sideways scrolling. Wider screens use compact project rows within each stage; smaller screens keep stacked card details. Per-stage scrolling and drag-and-drop are retained.

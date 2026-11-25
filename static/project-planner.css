@@ -2,3 +2,7 @@
 
 /* Each stage keeps five project rows/cards in view and scrolls independently. */
 .planner-board{align-items:flex-start}.planner-board-lane{min-width:0}.planner-lane-body{overflow-y:auto;overscroll-behavior-y:contain;scrollbar-width:thin;scrollbar-color:#7aaa67 #edf4e8;scrollbar-gutter:stable}.planner-board-body{max-height:725px;padding-right:4px}.planner-timeline-body{max-height:425px;overflow-x:hidden}.planner-lane-hint{display:block;color:#62805b;font-size:10px;margin:-6px 0 10px}.planner-lane-body:focus-visible{outline:2px solid #8fc345;outline-offset:-2px}.planner-lane-body::-webkit-scrollbar{width:9px}.planner-lane-body::-webkit-scrollbar-thumb{background:#7aaa67;border:2px solid #edf4e8;border-radius:10px}.planner-lane-body::-webkit-scrollbar-track{background:#edf4e8}.planner-timeline-body .planner-row-label{position:relative;left:auto;transform:translateX(var(--planner-scroll-x,0px))}
+
+/* Stages stack vertically; each stage retains its own five-project scroll area. */
+.planner-board{display:grid;grid-template-columns:minmax(0,1fr);align-items:start;overflow-x:visible}.planner-board-lane{width:100%;min-height:0;min-width:0}.planner-board-body{min-width:0}.planner-board .planner-card{min-width:0}
+@media(min-width:1250px){.planner-board .planner-card{grid-template-columns:minmax(120px,1fr) minmax(140px,1.3fr) minmax(130px,1fr) minmax(105px,.8fr) 145px;align-items:center;gap:12px}.planner-board .planner-move{margin-top:0}}
